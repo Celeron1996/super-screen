@@ -174,6 +174,7 @@
 
 ```
 super_screen/
+  README.md               # 项目入口：简介、快速开始、文档索引、协作速查
   .editorconfig           # 代码格式规范（强制，见 §8.2）
   .gitattributes          # 换行符/二进制文件规则（强制，见 §8.2）
   .gitignore              # 构建/调试产物忽略规则
@@ -251,7 +252,7 @@ git push -u origin dev/linux
 
 **格式（仓库根 `.editorconfig` + `.gitattributes` 已强制，二者必须随仓库提交）**
 
-- UTF-8 无 BOM；换行 LF（`.sln/.vcxproj*` 例外，保持 CRLF）；缩进 4 空格（Makefile 用 Tab）；行宽 ≤ 100；文件末尾必须换行；行尾不留空格。
+- UTF-8 无 BOM；换行 LF（`.sln/.vcxproj*` 例外，保持 CRLF）；缩进 4 空格（Makefile 用 Tab）；行宽 ≤ 100（Markdown 不受限）；文件末尾必须换行；行尾不留空格。
 - Windows 编译必须带 `/utf-8`（源码含中文注释）。
 
 **命名**
