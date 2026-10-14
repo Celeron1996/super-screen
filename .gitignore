@@ -1,0 +1,30 @@
+# 构建产物
+board/build/
+*.o
+*.o.d
+*.ko
+*.a
+
+# Windows / VS2022
+windows/.vs/
+windows/x64/
+windows/Debug/
+windows/Release/
+*.user
+*.aps
+
+# 调试/验证产物
+*.raw
+fb.png
+diff.png
+frame.bmp
+out.mp4
+
+# Python
+__pycache__/
+*.pyc
+
+# 日志与临时文件
+*.log
+*.tmp
+*~
