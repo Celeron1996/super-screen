@@ -105,12 +105,13 @@ main:
 | 收到 | 行为 |
 |---|---|
 | HELLO | 宽高须为支持的显示模式（1024x600；M3 起含 800x480），否则回 `HELLO_ACK(status=1)` 后断开；最终 format = 本地强制值（`--format` 非 auto 时）否则 HELLO.format；回 HELLO_ACK（原样回显宽高、tile_size=64、status=0）；重置本连接统计 |
-| TILES | 遍历 tile：`codec=0` 直接 `fb_apply_tile`；`codec=1` 先用 `LZ4_decompress_safe` 解到 16KB 暂存（`SSSC_TILE_MAX_RAW`），解压长度须 == `w*h*bpp`（bpp 按本连接最终 format），否则断连触发全刷自愈 |
+| TILES | 遍历 tile：`codec=0` 先校验 `data_len == w*h*bpp` 再 `fb_apply_tile`；`codec=1` 先用 `LZ4_decompress_safe` 解到 16KB 暂存（`SSSC_TILE_MAX_RAW`），解压长度须 == `w*h*bpp`（bpp 按本连接最终 format）；任一校验不符即断连触发全刷自愈（格式切换窗口内例外，见下） |
 | FULL_BEGIN/END | 重置/记录全刷统计 |
 | PING | 回 PONG（原样回显 timestamp） |
 | 其他/未知 | 记录一次警告并忽略（向前兼容） |
 
-- 接收积压检测：用户态缓冲即收即消费，积压只体现在**内核收包队列**——每处理完一条消息用 `net_pending()`（`ioctl(FIONREAD)`）采样待读字节数，连续 3 次 > `SSSC_BACKLOG_QUALITY`(1MB) → 发 `SET_QUALITY`（首次 RGB565；已 RGB565 仍拥塞则 fps 减半，下限 5；强制 format 时 format 字段恒为强制值、只降 fps）。发出后本连接后续 TILES 立即按新 format 解码（在途旧格式帧由 Win 端随之而来的全刷覆盖自愈）；随后计数清零重新累计，`backlog_hits` 递增。
+- 接收积压检测：用户态缓冲即收即消费，积压只体现在**内核收包队列**——每处理完一条消息用 `net_pending()`（`ioctl(FIONREAD)`）采样待读字节数，连续 3 次 > `SSSC_BACKLOG_QUALITY`(1MB) → 发 `SET_QUALITY`（首次 RGB565；已 RGB565 仍拥塞则 fps 减半，下限 5；强制 format 时 format 字段恒为强制值、只降 fps）。发出后本连接后续 TILES 立即按新 format 解码；随后计数清零重新累计，`backlog_hits` 递增。
+- 格式切换窗口：发出 `SET_QUALITY` 后置标志，收到下一个 `FULL_END` 时清除。窗口内长度校验不符的 tile 视为在途旧格式帧——丢弃并计 WARN，不触发断连；窗口外维持严格校验（不符即断连自愈）。TCP 有序保证旧格式帧必然先于新格式全刷到达，窗口在 `FULL_END` 关闭后不会误伤新数据。
 - 板端不发送 `HELLO`/`TILES`/`FULL_*`；收到的 `SET_QUALITY`/`PONG` 若出现则忽略。
 
 ### 3.4 fb.c

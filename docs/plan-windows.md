@@ -122,7 +122,7 @@ tick（默认 20fps，Sleep 对齐）:
 - 全刷调度（契约见 PLAN §5.5）：连续 3 帧脏块数 >120 → 触发；或距上次全刷 ≥5s 且仍有脏块 → 触发一次（自愈）；画面无脏块时不发全刷。
 - 拆包：单条 `TILES` payload ≤64KB，按脏块顺序装箱（一个 tile 的 14B 头 + data 不得跨消息拆开）。
 - 背压降级：发送队列连续 3 帧 >256KB → `fps_cap` 减半（下限 5）；恢复充裕时**不自动上调**（避免抖动），仅重连或全刷后复原。
-- 接收板端 `SET_QUALITY` → 立即采纳 `format/fps_cap`、失效 `prev`、记录日志；采纳前在途的旧格式 TILES 可能被板端按新 format 短暂错乱，由采纳后首帧全刷覆盖自愈（PLAN §5.5）。
+- 接收板端 `SET_QUALITY` → 立即采纳 `format/fps_cap`、失效 `prev`、丢弃发送队列中**尚未开始发送**的旧格式消息（已部分发送的让其发完，落进板端格式切换窗口被丢弃）、下一帧起全刷、记录日志；降级值在本进程内**粘滞**——重连的 HELLO 继续使用降级后的 format/fps_cap，直到进程重启才回到 config 值（PLAN §5.5，避免"降级→断连→复位→再拥塞"循环）。
 
 ### 4.6 cursor.cpp
 
@@ -137,7 +137,7 @@ tick（默认 20fps，Sleep 对齐）:
 ### 4.7 net.cpp
 
 - `WSAStartup(MAKEWORD(2,2))` 失败直接报错退出；socket → `TCP_NODELAY`；阻塞 connect 带 1s 超时重试。
-- **每次建立连接（含重连）后固定流程**：发 `HELLO` → 3s 内等 `HELLO_ACK`；超时、`status≠0`（板端拒绝）或 `tile_size≠64` 均断开按 1s 重试（`status≠0` 打 ERR）→ 失效 `prev` → 全刷。`format/fps_cap` 以本连接 `HELLO_ACK` 为准。
+- **每次建立连接（含重连）后固定流程**：发 `HELLO`（`format/fps_cap` 取当前生效值，含粘滞降级）→ 3s 内等 `HELLO_ACK`；超时、`status≠0`（板端拒绝）或 `tile_size≠64` 均断开按 1s 重试（`status≠0` 打 ERR）→ 失效 `prev` → 全刷。`format/fps_cap` 以本连接 `HELLO_ACK` 为准。
 - 发送：非阻塞 send + 用户态队列（cap 4MB）；队列满时由 tiles 层决策**跳过本轮**或只整条丢弃**尚未开始发送**的消息（绝不截断半条消息）；丢弃造成的画面滞后由后续全刷自愈。
 - 心跳：每 5s 发 `PING`；15s 无 `PONG` 或 send 失败 → `closesocket` 后 1s 重连。
 - 所有协议结构体一律取自 `src/sssc.h`（pack(1)）；本机小端，对 `sizeof` 做 `static_assert`（头文件已含）。
@@ -203,7 +203,7 @@ composite = 1
   1. 监听 0.0.0.0:<port>，接受一个连接直到断开；断开后继续等待下一个连接（便于 C5）。
   2. 收到 `HELLO` 必须回 `HELLO_ACK`（回显 width/height；`format` 默认回显 HELLO.format，`--fmt` 可强制覆盖以测降级；status=0，tile_size=64）；收到 `PING` 必须原样回显 `PONG`。缺任一项 Windows 端会一直等 ACK / 判心跳超时，C1/C5 无法通过。
   3. 解析 SSSC：校验魔数/version/length；打印每条消息类型/seq/count/字节数；
-     TILES 时逐块校验 w,h≤64、codec∈{0,1}、data_len 与剩余字节吻合，任何不符计数并打印。
+     TILES 时逐块校验 w,h≤64、codec∈{0,1}、data_len 与剩余字节吻合、raw（codec=0）时 data_len == w*h*bpp（bpp 按本连接 ACK 的 format），任何不符计数并打印。
   4. 每 5s 打印一行 `STATS`，键名必须与 PLAN §8.2 一致：`frames tiles_s rx_kbps ratio errors pongs`（键值含义：消息数、tiles/s、接收速率、LZ4 压缩比、错误计数、PONG 应答次数）。
   5. --lz4-check：用 python3-lz4 实际解压并校验长度 == w*h*bpp，bpp 按本连接 `HELLO_ACK.format`（`--fmt` 覆盖时按覆盖值）计算（未安装则提示 apt install python3-lz4）。
   6. --set-quality FMT[:FPS]：连接 5s 后发一条 `SET_QUALITY`（C6 无板自测降级用），默认不发。
