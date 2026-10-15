@@ -127,9 +127,9 @@
 
 ### 5.5 全刷、背压与降级
 
-- **全刷**：连接后首次必发；之后每 5s，或连续 3 帧脏块数 > 120 时触发。序列：`FULL_BEGIN` → 若干 `TILES` → `FULL_END`。板端收到 FULL_END 清统计并确认全屏一致。
+- **全刷**：连接后首帧必发；之后满足任一条件时触发：连续 3 帧脏块数 > `SSSC_FULL_DIRTY_THRESH`(120)；或距上次全刷 ≥ `SSSC_FULL_REFRESH_SEC`(5s) 且存在脏块（自愈；画面静止无脏块时不发，不空耗带宽）。序列：`FULL_BEGIN` → 若干 `TILES` → `FULL_END`。板端收到 FULL_END 清统计并确认全屏一致。
 - **背压**：Win 端发送队列 > 256KB 时跳过本轮（丢帧不丢连接）；连续 3 帧被跳过则自动将 fps_cap 减半（下限 5）。
-- **降级**：板上接收积压 > 1MB 时发 `SET_QUALITY`（先 `format=1` RGB565；仍拥塞则 fps_cap 减半）。Win 端采纳后不再回切（会话内），直到下次重连。
+- **降级**：板上接收积压（内核收包队列待读字节数，检测方式见板端计划 §3.3）> 1MB 时发 `SET_QUALITY`（先 `format=1` RGB565；已 RGB565 仍拥塞则 fps_cap 减半，下限 `SSSC_FPS_CAP_MIN`）。Win 端采纳后不再回切（会话内），直到下次重连。
 - **自愈**：任何解析错误 → 板端丢弃连接回 listen；Win 端重连后全刷。
 
 ### 5.6 规范定义文件（唯一权威）
@@ -278,7 +278,7 @@ git push -u origin dev/linux
 **日志与统计（机器可读，跨端统一）**
 
 - 事件行：`<module> <LEVEL> <message>`；module = `board|win|mock`；LEVEL = `INFO|WARN|ERR`。
-- 统计行：每 5s 一行，以 `STATS ` 开头，空格分隔 `key=value`。各组件**必含键**：板端 `fps tiles_s rx_kbps rss_kb full_refresh backlog_hits`；Windows 端 `fps tiles_s tx_kbps rss_kb queue_kb full_refresh`；mock 工具 `frames tiles_s tx_kbps ratio pong_rtt`。可按需追加其他 `key=value`。PR 证据直接粘贴此格式即可被脚本校验。
+- 统计行：每 5s 一行，以 `STATS ` 开头，空格分隔 `key=value`。各组件**必含键**：板端 `fps tiles_s rx_kbps rss_kb full_refresh backlog_hits`；Windows 端 `fps tiles_s tx_kbps rss_kb queue_kb full_refresh`；`mock_sender.py` `frames tiles_s tx_kbps ratio pong_rtt`；`mock_receiver.py` `frames tiles_s rx_kbps ratio errors pongs`。可按需追加其他 `key=value`。PR 证据直接粘贴此格式即可被脚本校验。
 - 延迟探针：Windows `lat_probe tx_ts=<unix_ms>`；板端 `lat_probe rx_ts=<unix_ms> tile=<x,y>`（见总计划 §10）。
 - 禁止逐帧/逐 tile 日志；调试细节一律用 `--verbose` 开关控制。
 

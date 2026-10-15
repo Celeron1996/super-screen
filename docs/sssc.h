@@ -140,11 +140,18 @@ typedef struct SSSC_PACKED {     /* 14B，后接 data_len 字节 */
 #define SSSC_TILE_RAW_BYTES(w, h, fmt) \
     ((size_t)(w) * (size_t)(h) * SSSC_BPP(fmt))
 
-/* 接收端正确性断言（编译期） */
+/* 接收端正确性断言（编译期）。
+ * 板端标准为 C99：_Static_assert 属 C11，严格 C99 下不可移植，
+ * 故 C99 分支用 typedef 数组回退（要求每条断言独占一行）。 */
 #if defined(__cplusplus)
 #  define SSSC_STATIC_ASSERT(c, m) static_assert((c), m)
-#else
+#elif defined(__STDC_VERSION__) && (__STDC_VERSION__ >= 201112L)
 #  define SSSC_STATIC_ASSERT(c, m) _Static_assert((c), m)
+#else
+#  define SSSC_SA_JOIN_INNER(a, b) a##b
+#  define SSSC_SA_JOIN(a, b) SSSC_SA_JOIN_INNER(a, b)
+#  define SSSC_STATIC_ASSERT(c, m) \
+      typedef char SSSC_SA_JOIN(sssc_static_assert_, __LINE__)[(c) ? 1 : -1]
 #endif
 
 SSSC_STATIC_ASSERT(sizeof(sssc_hdr)        == 12, "sssc_hdr must be 12 bytes");

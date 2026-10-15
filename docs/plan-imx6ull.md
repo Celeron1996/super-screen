@@ -57,6 +57,7 @@ void fb_close(fb_t *fb);
 int  net_listen(uint16_t port);                  /* SO_REUSEADDR；返回 listen fd */
 int  net_accept(int lfd);                        /* 阻塞 accept；失败 -1 */
 int  net_recv_some(int fd, void *buf, size_t cap); /* 一次 recv；>0 字节数，0=对端关闭，-1=错误/超时 */
+int  net_pending(int fd);                        /* ioctl(FIONREAD)：内核收包队列待读字节数；失败 -1 */
 int  net_send_all(int fd, const void *buf, size_t len); /* 循环 send，仅用于 HELLO_ACK/PONG 小包 */
 
 /* protocol.h */
@@ -78,7 +79,7 @@ void sssc_stats_log(sssc_ctx_t *ctx);            /* 每 5s 调用，打印一行
 
 ```
 main:
-  解析参数（--port 5901 --format bgra32 --log /tmp/superscreen.log）
+  解析参数（--port 5901 --format auto --log /tmp/superscreen.log；format=auto|bgra32|rgb565，auto 尊重 HELLO.format）
   fb_open() 校验 1024x600x32，mmap
   listen socket（SO_REUSEADDR）
   for (;;) {
@@ -91,7 +92,7 @@ main:
 
 ### 3.2 net.c — 流式收包
 
-- 2MB 线性缓冲 + 读写指针；`recv()` 循环，按需 compact（不动态扩容；与 §3.3 的 1MB 积压判定阈值兼容）。
+- 2MB 线性缓冲 + 读写指针；`recv()` 循环，按需 compact（不动态扩容；单条消息 ≤ `SSSC_MAX_MSG_ACCEPT`(256KB)，2MB 必然容纳）。
 - 状态机：凑满 12B 公共头 → 校验 magic/version/`length ≤ 256KB` → 等 payload → 交 `protocol_dispatch`。
 - `SO_RCVTIMEO = 15s`：超时即视为心跳丢失，断开回 listen。
 - 发送路径仅小包（`HELLO_ACK`/`PONG`，可直接 `send`）。
@@ -100,13 +101,13 @@ main:
 
 | 收到 | 行为 |
 |---|---|
-| HELLO | 最终 format = 本地强制值（`--format` 指定时）否则 HELLO.format；回 HELLO_ACK（tile_size=64, status=0）；重置本连接统计 |
+| HELLO | 最终 format = 本地强制值（`--format` 非 auto 时）否则 HELLO.format；回 HELLO_ACK（tile_size=64, status=0）；重置本连接统计 |
 | TILES | 遍历 tile：`codec=0` 直接 `fb_apply_tile`；`codec=1` 先用 `LZ4_decompress_safe` 解到 16KB 暂存（`SSSC_TILE_MAX_RAW`），解压长度须 == `w*h*bpp`，否则断连触发全刷自愈 |
 | FULL_BEGIN/END | 重置/记录全刷统计 |
 | PING | 回 PONG（原样回显 timestamp） |
 | 其他/未知 | 记录一次警告并忽略（向前兼容） |
 
-- 接收积压检测：缓冲区未消费字节 > 1MB（`SSSC_BACKLOG_QUALITY`）连续 3 次 → 发 `SET_QUALITY`（首次 RGB565；仍拥塞则 fps 减半，下限 5）。
+- 接收积压检测：用户态缓冲即收即消费，积压只体现在**内核收包队列**——每处理完一条消息用 `net_pending()`（`ioctl(FIONREAD)`）采样待读字节数，连续 3 次 > `SSSC_BACKLOG_QUALITY`(1MB) → 发 `SET_QUALITY`（首次 RGB565；已 RGB565 仍拥塞则 fps 减半，下限 5），随后计数清零重新累计，`backlog_hits` 递增。
 - 板端不发送 `HELLO`/`TILES`/`FULL_*`；收到的 `SET_QUALITY`/`PONG` 若出现则忽略。
 
 ### 3.4 fb.c
@@ -224,17 +225,19 @@ ssh root@192.168.1.14 'cd /root/super_screen && nohup ./super_screen_client >/tm
   --codec C       auto | raw | lz4       （默认 auto：优先 LZ4，压不小则 raw）
   --fps N         目标帧率（默认 10，上限 30）
   --seconds N     运行时长（默认 0 = 一直运行）
-  --full-every N  每 N 秒插入一次全刷（默认 5，0=禁用）
+  --full-every N  距上次全刷 ≥N 秒且有变化时插入全刷（默认 5，0=禁用）
 ```
 
 行为要求（可被 B3–B7 直接使用）：
 
 1. 连接板端 TCP；发 `HELLO`（1024x600、`--fmt`、fps_cap=20），3s 内未收 `HELLO_ACK` 则报错退出；**后续一律按 `HELLO_ACK.format` 发送**。
-2. 内部维护 2.4MB 当前帧与干净帧，逐 64x64 块 `bytes` 比较，只发送变化块；连接后第一帧 + 每 `--full-every` 秒发送全刷（`FULL_BEGIN`→`TILES`→`FULL_END`）。
+2. 内部维护 2.4MB 当前帧与干净帧，逐 64x64 块 `bytes` 比较，只发送变化块；连接后第一帧必为全刷（`FULL_BEGIN`→`TILES`→`FULL_END`）；之后距上次全刷 ≥`--full-every` 秒且存在变化块时插入一次全刷，画面无变化时不发。
 3. 每 5s 打印一行 `STATS`（格式见 PLAN §8.2，必含键 `frames tiles_s tx_kbps ratio pong_rtt`）；每个变化 tile 若处于"静止后首次"则打印 `lat_probe tx_ts=<毫秒>(time.time()*1000)`（对应 §3.5）。
 4. `--codec lz4` 依赖 `python3-lz4`（`apt install python3-lz4`）；未安装时给出明确报错。
 5. 图案定义：`bars`=§3.6 静态图；`move`=黑底上一个 64x64 白方块按 45° 反弹（每帧移动 8px）；`scroll`=100px 高渐变条从下向上循环滚动。
 6. Ctrl-C 退出码 0，并打印汇总（总帧数/总字节/平均 Mbps/最长连续静止时长）。
+7. 每 5s 发送 `PING` 并记录 `PONG` 往返毫秒（`STATS` 的 `pong_rtt`，超时记 -1 并打 WARN；不因心跳超时主动断开，运行时长由 `--seconds`/Ctrl-C 控制）。
+8. 收到 `SET_QUALITY` 立即采纳 `format/fps_cap` 并清空干净帧缓冲（下帧起全刷），与 Windows 端行为一致。
 
 ### 8.2 tools/screenshot_board.sh（主机抓屏封装）
 

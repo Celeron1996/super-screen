@@ -119,7 +119,7 @@ tick（默认 20fps，Sleep 对齐）:
 
 - 维护 `prev[2.4MB]`；逐块（16x10=160）`memcmp`；块变化→记脏块。
 - **首帧/失效帧**：`prev` 初始为"无效"；连接后的第一帧以及每次变更 format（采纳 SET_QUALITY）后，`prev` 置无效 → 全部 tile 视为脏，并按 §5.7-4 发全刷。
-- 脏块数 >120 连续 3 帧 → 触发全刷（`FULL_BEGIN`→`TILES`→`FULL_END`）；距上次全刷 ≥5s 且仍有脏块 → 也全刷一次（自愈）。
+- 全刷调度（契约见 PLAN §5.5）：连续 3 帧脏块数 >120 → 触发；或距上次全刷 ≥5s 且仍有脏块 → 触发一次（自愈）；画面无脏块时不发全刷。
 - 拆包：单条 `TILES` payload ≤64KB，按脏块顺序装箱（一个 tile 的 14B 头 + data 不得跨消息拆开）。
 - 背压降级：发送队列连续 3 帧 >256KB → `fps_cap` 减半（下限 5）；恢复充裕时**不自动上调**（避免抖动），仅重连或全刷后复原。
 - 接收板端 `SET_QUALITY` → 立即采纳 `format/fps_cap`、失效 `prev`、记录日志。
@@ -172,6 +172,8 @@ lz4 = 1
 composite = 1
 ```
 
+- `monitor_match` 的 `name:` 后接 Win32 设备名原文（如 `\\.\DISPLAY2`）；INI 值不做转义处理，`GetPrivateProfileString` 原样读取，按原文写入即可（不要增删反斜杠）。
+
 ## 6. 构建
 
 - VS2022（v143）+ Windows SDK 10；安装工作负载"使用 C++ 的桌面开发"；C++17；x64；**/MT 静态运行库**（免 VC++ Redist 依赖）；`/W4 /utf-8`（源码含中文注释，必须 UTF-8）。
@@ -195,15 +197,17 @@ composite = 1
 ### 7.1 tools/mock_receiver.py CLI 契约（Windows 负责人实现，用于无板自测）
 
 ```
-用法: python3 tools/mock_receiver.py [--port 5901] [--save DIR] [--lz4-check] [--log FILE]
+用法: python3 tools/mock_receiver.py [--port 5901] [--fmt bgra32|rgb565] [--set-quality RGB565[:FPS]] [--save DIR] [--lz4-check] [--log FILE]
 行为要求:
   1. 监听 0.0.0.0:<port>，接受一个连接直到断开；断开后继续等待下一个连接（便于 C5）。
-  2. 解析 SSSC：校验魔数/version/length；打印每条消息类型/seq/count/字节数；
+  2. 收到 `HELLO` 必须回 `HELLO_ACK`（回显 width/height；`format` 默认回显 HELLO.format，`--fmt` 可强制覆盖以测降级；status=0，tile_size=64）；收到 `PING` 必须原样回显 `PONG`。缺任一项 Windows 端会一直等 ACK / 判心跳超时，C1/C5 无法通过。
+  3. 解析 SSSC：校验魔数/version/length；打印每条消息类型/seq/count/字节数；
      TILES 时逐块校验 w,h≤64、codec∈{0,1}、data_len 与剩余字节吻合，任何不符计数并打印。
-  3. 每 5s 打印：消息数、tiles/s、Mbps、压缩比（LZ4 输入/输出均值）、错误计数、最近一次 PONG RTT。
-  4. --lz4-check：用 python3-lz4 实际解压并校验长度 == w*h*bpp（未安装则提示 apt install python3-lz4）。
-  5. --save DIR：把每个收到的 tile 以 `tile_x_y_w_h.bin` 落盘（按需，仅 C1 排查用）。
-  6. Ctrl-C 退出码 0 并打印汇总。
+  4. 每 5s 打印一行 `STATS`（键见 PLAN §8.2）：消息数、tiles/s、Mbps、压缩比（LZ4 输入/输出均值）、错误计数、PONG 应答次数。
+  5. --lz4-check：用 python3-lz4 实际解压并校验长度 == w*h*bpp（未安装则提示 apt install python3-lz4）。
+  6. --set-quality FMT[:FPS]：连接 5s 后发一条 `SET_QUALITY`（C6 无板自测降级用），默认不发。
+  7. --save DIR：把每个收到的 tile 以 `tile_x_y_w_h.bin` 落盘（按需，仅 C1 排查用）。
+  8. Ctrl-C 退出码 0 并打印汇总。
 ```
 
 ### 7.2 A2 画面比对方法（与板端联调时）
