@@ -111,7 +111,7 @@ main:
 | 其他/未知 | 记录一次警告并忽略（向前兼容） |
 
 - 接收积压检测：用户态缓冲即收即消费，积压只体现在**内核收包队列**——每处理完一条消息用 `net_pending()`（`ioctl(FIONREAD)`）采样待读字节数，连续 3 次 > `SSSC_BACKLOG_QUALITY`(1MB) → 发 `SET_QUALITY`（首次 RGB565；已 RGB565 仍拥塞则 fps 减半，下限 5；强制 format 时 format 字段恒为强制值、只降 fps）。发出后本连接后续 TILES 立即按新 format 解码；随后计数清零重新累计，`backlog_hits` 递增。
-- 格式切换窗口：发出 `SET_QUALITY` 后置标志，收到下一个 `FULL_END` 时清除。窗口内长度校验不符的 tile 视为在途旧格式帧——丢弃并计 WARN，不触发断连；窗口外维持严格校验（不符即断连自愈）。TCP 有序保证旧格式帧必然先于新格式全刷到达，窗口在 `FULL_END` 关闭后不会误伤新数据。
+- 格式切换窗口：发出 `SET_QUALITY` 后置标志并立即按新 format 解码。窗口内长度校验不符的 tile 视为在途旧格式帧——丢弃并计 WARN，不触发断连。关闭条件：**置标志后收到 `FULL_BEGIN`、且该轮全刷全程零丢弃的 `FULL_END`**——全刷必含 ≥1 个 tile、旧格式帧在 4bpp→2bpp 降级下必然校验不符，故首个满足条件者即 Win 采纳后的新格式全刷（首个 `FULL_END` 不能关窗：积压中可能还有旧格式全刷的 `FULL_END`，其后的旧增量帧会被误伤）。最长 15s（`SSSC_HEARTBEAT_TIMEOUT`）超时强制关闭。窗口外维持严格校验（不符即断连自愈）。强制 format（format 未变化）时窗口内不会有丢弃，首个全刷即关闭，无副作用。
 - 板端不发送 `HELLO`/`TILES`/`FULL_*`；收到的 `SET_QUALITY`/`PONG` 若出现则忽略。
 
 ### 3.4 fb.c
