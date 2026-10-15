@@ -122,7 +122,7 @@ tick（默认 20fps，Sleep 对齐）:
 - 全刷调度（契约见 PLAN §5.5）：连续 3 帧脏块数 >120 → 触发；或距上次全刷 ≥5s 且仍有脏块 → 触发一次（自愈）；画面无脏块时不发全刷。
 - 拆包：单条 `TILES` payload ≤64KB，按脏块顺序装箱（一个 tile 的 14B 头 + data 不得跨消息拆开）。
 - 背压降级：发送队列连续 3 帧 >256KB → `fps_cap` 减半（下限 5）；恢复充裕时**不自动上调**（避免抖动），仅重连或全刷后复原。
-- 接收板端 `SET_QUALITY` → 立即采纳 `format/fps_cap`、失效 `prev`、记录日志。
+- 接收板端 `SET_QUALITY` → 立即采纳 `format/fps_cap`、失效 `prev`、记录日志；采纳前在途的旧格式 TILES 可能被板端按新 format 短暂错乱，由采纳后首帧全刷覆盖自愈（PLAN §5.5）。
 
 ### 4.6 cursor.cpp
 
@@ -137,8 +137,8 @@ tick（默认 20fps，Sleep 对齐）:
 ### 4.7 net.cpp
 
 - `WSAStartup(MAKEWORD(2,2))` 失败直接报错退出；socket → `TCP_NODELAY`；阻塞 connect 带 1s 超时重试。
-- **每次建立连接（含重连）后固定流程**：发 `HELLO` → 3s 内等 `HELLO_ACK`，超时则断开重试 → 失效 `prev` → 全刷。`format/fps_cap` 以本连接 `HELLO_ACK` 为准。
-- 发送：非阻塞 send + 用户态队列（cap 4MB）；满则丢最旧数据或跳过本轮（由 tiles 层决策）。
+- **每次建立连接（含重连）后固定流程**：发 `HELLO` → 3s 内等 `HELLO_ACK`；超时、`status≠0`（板端拒绝）或 `tile_size≠64` 均断开按 1s 重试（`status≠0` 打 ERR）→ 失效 `prev` → 全刷。`format/fps_cap` 以本连接 `HELLO_ACK` 为准。
+- 发送：非阻塞 send + 用户态队列（cap 4MB）；队列满时由 tiles 层决策**跳过本轮**或只整条丢弃**尚未开始发送**的消息（绝不截断半条消息）；丢弃造成的画面滞后由后续全刷自愈。
 - 心跳：每 5s 发 `PING`；15s 无 `PONG` 或 send 失败 → `closesocket` 后 1s 重连。
 - 所有协议结构体一律取自 `src/sssc.h`（pack(1)）；本机小端，对 `sizeof` 做 `static_assert`（头文件已含）。
 
@@ -146,7 +146,7 @@ tick（默认 20fps，Sleep 对齐）:
 
 - 每 5s 打印一行 `STATS`（格式见 PLAN §8.2），键含：`fps tiles_s tx_kbps rss_kb queue_kb full_refresh`；同行附 capture 耗时（均值/最大）、压缩比、当前 `fps_cap/format`。
 - **延迟探针**：处于"静止 → 首个变化帧"时打印 `lat_probe tx_ts=<unix毫秒>`（与板端 `lat_probe rx_ts` 对应，A3 近似测量，见总计划 §10）。
-- `--dump-frame <out.bmp>`：每次全刷结束时把当前帧存为 BMP（与板端抓屏做 A2 逐块比对）；可重复启动用于 C2/C3。
+- `--dump-frame <out.bmp>`：每次全刷结束时把当前帧存为 BMP（与板端抓屏做 A2 逐块比对）；可多次运行，文件被最近一次全刷覆盖，用于 C2/C3。
 
 ## 5. 配置项（config.ini）
 
@@ -182,6 +182,7 @@ composite = 1
 - `config.ini` 用 `GetPrivateProfileString` 读取；文件缺失时使用内置默认值并在日志中提示。
 - 代码可在 Ubuntu 编写，编译以 MSVC 为准；mingw-w64 仅能覆盖 GDI 路径，不作主路径。
 - 产出：`super_screen_win.exe`（单文件 + config.ini + 源码编译说明已写入 `README.md`）。
+- **M2 自启（A5）**：不做 Windows 服务（服务运行在会话 0，取不到交互桌面与显示器拓扑）；用**任务计划程序**注册"用户登录时启动"，触发后延迟 30s 等 VDD 与桌面就绪，工作目录设为 exe 所在目录；安装步骤记入 `windows/README.md`。
 
 ## 7. 测试与验收
 
@@ -203,8 +204,8 @@ composite = 1
   2. 收到 `HELLO` 必须回 `HELLO_ACK`（回显 width/height；`format` 默认回显 HELLO.format，`--fmt` 可强制覆盖以测降级；status=0，tile_size=64）；收到 `PING` 必须原样回显 `PONG`。缺任一项 Windows 端会一直等 ACK / 判心跳超时，C1/C5 无法通过。
   3. 解析 SSSC：校验魔数/version/length；打印每条消息类型/seq/count/字节数；
      TILES 时逐块校验 w,h≤64、codec∈{0,1}、data_len 与剩余字节吻合，任何不符计数并打印。
-  4. 每 5s 打印一行 `STATS`（键见 PLAN §8.2）：消息数、tiles/s、Mbps、压缩比（LZ4 输入/输出均值）、错误计数、PONG 应答次数。
-  5. --lz4-check：用 python3-lz4 实际解压并校验长度 == w*h*bpp（未安装则提示 apt install python3-lz4）。
+  4. 每 5s 打印一行 `STATS`，键名必须与 PLAN §8.2 一致：`frames tiles_s rx_kbps ratio errors pongs`（键值含义：消息数、tiles/s、接收速率、LZ4 压缩比、错误计数、PONG 应答次数）。
+  5. --lz4-check：用 python3-lz4 实际解压并校验长度 == w*h*bpp，bpp 按本连接 `HELLO_ACK.format`（`--fmt` 覆盖时按覆盖值）计算（未安装则提示 apt install python3-lz4）。
   6. --set-quality FMT[:FPS]：连接 5s 后发一条 `SET_QUALITY`（C6 无板自测降级用），默认不发。
   7. --save DIR：把每个收到的 tile 以 `tile_x_y_w_h.bin` 落盘（按需，仅 C1 排查用）。
   8. Ctrl-C 退出码 0 并打印汇总。
@@ -213,8 +214,8 @@ composite = 1
 ### 7.2 A2 画面比对方法（与板端联调时）
 
 1. Windows 端启动应用并加 `--dump-frame frame.bmp`，等全刷结束后得到 `frame.bmp`（1024x600 BGRA）。
-2. 板端抓屏（总计划 §10 命令）得到 `fb.png`。
-3. 比对：`compare -metric AE frame.bmp fb.png diff.png`（ImageMagick；允许光标区域与压缩近似误差，逐 64x64 块统计，差异块数应为 0，若仅 1–2 个光标块则人工确认）。
+2. 板端抓屏（总计划 §10 命令）得到原始 `fb.raw`（按需再转 `fb.png` 目检）。
+3. 比对：把两侧统一为**原始 BGRA** 后逐 64x64 块比较（`compare -metric AE` 只报像素差总数，不满足"逐块"判据）：`convert frame.bmp -depth 8 bgra:frame.raw`，板端抓屏命令直接产出 `fb.raw`；再用脚本（`cmp` 逐块或 Python 标准库）统计差异块，判据 **差异块数 = 0**（仅光标所涉 1–2 块有差时人工确认）。注意：LZ4 无损、不应有压缩误差；RGB565 会话存在色彩量化差，A2 应在 BGRA32 下执行。
 
 ## 8. 风险与对策
 

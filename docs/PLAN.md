@@ -104,6 +104,7 @@
 | 0x0041 | PONG | 板→Win | `timestamp u32`（回显） |
 
 `format`：0 = BGRA32（每像素 4 字节，内存序 B,G,R,A，与板 fb 直拷）；1 = RGB565（每像素 2 字节）。
+`status`：0=OK；非 0=拒绝（1=不支持的模式，其余码保留）；Win 端收到非 0 即断开并按 1s 重试（打 ERR 日志）。
 
 ### 5.4 Tile 定义与像素约定
 
@@ -129,7 +130,7 @@
 
 - **全刷**：连接后首帧必发；之后满足任一条件时触发：连续 3 帧脏块数 > `SSSC_FULL_DIRTY_THRESH`(120)；或距上次全刷 ≥ `SSSC_FULL_REFRESH_SEC`(5s) 且存在脏块（自愈；画面静止无脏块时不发，不空耗带宽）。序列：`FULL_BEGIN` → 若干 `TILES` → `FULL_END`。板端收到 FULL_END 清统计并确认全屏一致。
 - **背压**：Win 端发送队列 > 256KB 时跳过本轮（丢帧不丢连接）；连续 3 帧被跳过则自动将 fps_cap 减半（下限 5）。
-- **降级**：板上接收积压（内核收包队列待读字节数，检测方式见板端计划 §3.3）> 1MB 时发 `SET_QUALITY`（先 `format=1` RGB565；已 RGB565 仍拥塞则 fps_cap 减半，下限 `SSSC_FPS_CAP_MIN`）。Win 端采纳后不再回切（会话内），直到下次重连。
+- **降级**：板上接收积压（内核收包队列待读字节数，检测方式见板端计划 §3.3）> 1MB 时发 `SET_QUALITY`（先 `format=1` RGB565；已 RGB565 仍拥塞则 fps_cap 减半，下限 `SSSC_FPS_CAP_MIN`；板端配置为强制 format 时 format 字段恒为强制值、只降 fps）。生效时点：板端发出后对**后续收到的 TILES 立即按新 format 解码**；Win 端采纳后失效 prev、下一帧起全刷；采纳前在途的旧格式帧可能短暂错乱，由该次全刷覆盖自愈。Win 端采纳后不再回切（会话内），直到下次重连。
 - **自愈**：任何解析错误 → 板端丢弃连接回 listen；Win 端重连后全刷。
 
 ### 5.6 规范定义文件（唯一权威）
@@ -148,6 +149,8 @@
 7. **保留字段**：发送方必须填 0；接收方必须忽略。
 8. **心跳超时**：Win 端 15s 无 PONG（或发送失败）断线重连；板端 15s 无任何消息主动断开。
 9. **时间戳**：PING/PONG 的 timestamp 为发送方毫秒级单调计数（非绝对时间），PONG 原样回显。
+10. **尺寸协商**：HELLO 宽高必须是板端支持的显示模式（v1：1024x600；M3 起增加 800x480）。支持则 HELLO_ACK 原样回显宽高；不支持则回 status≠0 后断开。800x480 会话中板端将画面**居中、不缩放**显示在 1024x600 面板（左上偏移 (112,60)，四周黑边），tile 坐标原点仍为 800x480 虚拟屏左上角，网格 13x8=104 块（最右列宽 32、最下行高 32）。
+11. **HELLO_ACK 校验**：Win 端校验 status=0 且 tile_size=64（`SSSC_TILE_SIZE`）才继续，否则断开重试。
 
 ## 6. 验收标准（总）
 
@@ -307,7 +310,7 @@ git push -u origin dev/linux
 - 动画流畅度：板上 `ffmpeg -f fbdev -framerate 15 -i /dev/fb0 -t 12 out.mp4`，主机抽帧。
 - 两端统计：统一输出 §8.2 的 `STATS` 行（发送端另附脏块数/压缩比；板端键含 `tiles_s/rss_kb/backlog_hits`）。
 - 协议冒烟：`tools/mock_sender.py`（板端负责人实现，CLI 契约见板端文档 §8.1）、`tools/mock_receiver.py`（Windows 负责人实现，CLI 契约见 Windows 文档 §7.1）。
-- **A3 延迟近似测量**：两端均经 NTP 对时（板端 ntpd 常驻）；Windows 端记录每次"发送包含该变化的 TILES"的本地时间（应用日志），板端记录该 tile 写入 fb 的本地时间；差值即端到端近似延迟（含小于 50ms 的时钟偏移，接受作为 A3 判据）。另以 PING/PONG RTT 作为网络基线（局域网 WiFi 目标 < 60ms）。
+- **A3 延迟近似测量**：测量前两端必须对时（Windows 用系统时间同步；板端 ntpd **是否驻留需在 M1 前核实**，未驻留则先启动或改用其他对时方式），确保两端偏差 < 50ms；Windows 端记录每次"发送包含该变化的 TILES"的本地时间（应用日志），板端记录该 tile 写入 fb 的本地时间；差值即端到端近似延迟，接受作为 A3 判据。另以 PING/PONG RTT 作为网络基线（局域网 WiFi 目标 < 60ms）。
 
 ## 11. 风险与对策
 
@@ -325,4 +328,3 @@ git push -u origin dev/linux
 - Microsoft Learn：Indirect Display Driver Model Overview（IddCx 官方机制）
 - `VirtualDrivers/Virtual-Display-Driver`（MIT，已签名 IddCx 驱动，Win10/11）
 - 原版 `ge9/IddSampleDriver` / `roshkins/IddSampleDriver`、Sunshine 串流项目的 VDD 集成（采集可行性佐证）
-- 本工作区 `AGENTS.md`：板端平台注意事项与部署命令

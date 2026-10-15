@@ -7,12 +7,15 @@
 - **你的角色**：Ubuntu 端开发者（大模型），负责板端接收客户端 + 主机自测工具。
 - **你要交付**：`board/`（客户端、test_pattern、S99 脚本）与 `tools/mock_sender.py`（Python，Ubuntu 运行）。
 - **前置阅读**：`docs/PLAN.md` §5（协议）与 §5.6/§5.7（唯一权威 `docs/sssc.h` + 边界规则）、§9（板端底数）。本文档给出函数级设计与逐条命令。
-- **第一步**（仓库根 `project/super_screen/` 下执行）：
+- **第一步**（仓库根目录下执行；先做环境准备，按 §2–§6 写出源码与 Makefile 骨架后再跑构建自检）：
 
 ```bash
+# 环境准备（仓库根）
 mkdir -p board/src board/tools board/scripts board/build tools
 cp docs/sssc.h board/src/sssc.h          # 原样复制，勿改
-cd board && make HOST=1                  # 先主机语法检查（无需板子）
+
+# 编写完成后自检（需要 Makefile 与源码已存在）
+cd board && make HOST=1                  # 主机侧语法检查（无需板子）
 make && file build/super_screen_client   # 交叉编译，确认输出为 ARM ELF
 ```
 
@@ -101,13 +104,13 @@ main:
 
 | 收到 | 行为 |
 |---|---|
-| HELLO | 最终 format = 本地强制值（`--format` 非 auto 时）否则 HELLO.format；回 HELLO_ACK（tile_size=64, status=0）；重置本连接统计 |
-| TILES | 遍历 tile：`codec=0` 直接 `fb_apply_tile`；`codec=1` 先用 `LZ4_decompress_safe` 解到 16KB 暂存（`SSSC_TILE_MAX_RAW`），解压长度须 == `w*h*bpp`，否则断连触发全刷自愈 |
+| HELLO | 宽高须为支持的显示模式（1024x600；M3 起含 800x480），否则回 `HELLO_ACK(status=1)` 后断开；最终 format = 本地强制值（`--format` 非 auto 时）否则 HELLO.format；回 HELLO_ACK（原样回显宽高、tile_size=64、status=0）；重置本连接统计 |
+| TILES | 遍历 tile：`codec=0` 直接 `fb_apply_tile`；`codec=1` 先用 `LZ4_decompress_safe` 解到 16KB 暂存（`SSSC_TILE_MAX_RAW`），解压长度须 == `w*h*bpp`（bpp 按本连接最终 format），否则断连触发全刷自愈 |
 | FULL_BEGIN/END | 重置/记录全刷统计 |
 | PING | 回 PONG（原样回显 timestamp） |
 | 其他/未知 | 记录一次警告并忽略（向前兼容） |
 
-- 接收积压检测：用户态缓冲即收即消费，积压只体现在**内核收包队列**——每处理完一条消息用 `net_pending()`（`ioctl(FIONREAD)`）采样待读字节数，连续 3 次 > `SSSC_BACKLOG_QUALITY`(1MB) → 发 `SET_QUALITY`（首次 RGB565；已 RGB565 仍拥塞则 fps 减半，下限 5），随后计数清零重新累计，`backlog_hits` 递增。
+- 接收积压检测：用户态缓冲即收即消费，积压只体现在**内核收包队列**——每处理完一条消息用 `net_pending()`（`ioctl(FIONREAD)`）采样待读字节数，连续 3 次 > `SSSC_BACKLOG_QUALITY`(1MB) → 发 `SET_QUALITY`（首次 RGB565；已 RGB565 仍拥塞则 fps 减半，下限 5；强制 format 时 format 字段恒为强制值、只降 fps）。发出后本连接后续 TILES 立即按新 format 解码（在途旧格式帧由 Win 端随之而来的全刷覆盖自愈）；随后计数清零重新累计，`backlog_hits` 递增。
 - 板端不发送 `HELLO`/`TILES`/`FULL_*`；收到的 `SET_QUALITY`/`PONG` 若出现则忽略。
 
 ### 3.4 fb.c
@@ -120,6 +123,7 @@ main:
   out = ((r<<3)|(r>>2))<<16 | ((g<<2)|(g>>4))<<8 | ((b<<3)|(b>>2))   // 按内存序 B,G,R,A 写入
   ```
 
+- M3 起：若本连接尺寸为 800x480，写入前对坐标加居中偏移 (112,60)（不缩放，四周留黑）；进入该模式的首个全刷前可将整屏清黑一次，避免旧内容残留在边框区。
 - 首帧到达前保持 fb 原内容（psplash 已被杀，残留最后画面）。
 
 ### 3.5 统计与日志
@@ -130,14 +134,14 @@ main:
 
 ### 3.6 test_pattern（自测图定义，客观可验）
 
-板上运行 `./test_pattern`（`--format bgra32|rgb565`），图案固定如下：
+板上运行 `./test_pattern`（`--format bgra32|rgb565`，默认 bgra32），图案固定如下：
 
 | 区域 | 内容 |
 |---|---|
 | y ∈ [0,32) | 纯白条（检查偏移/闪烁） |
 | y ∈ [32,512) | 8 条垂直色带（每条宽 128px），从左到右：红、绿、蓝、白、黄、青、品红、黑 |
 | y ∈ [512,576) | 16px 黑白棋盘格 |
-| y ∈ [576,600) | 32 段灰阶阶梯（8 级×4 循环，从 0 到 255） |
+| y ∈ [576,600) | 32 段灰阶阶梯：8 个灰度值 0,36,73,109,146,182,219,255，每段 32px 循环 4 次 |
 
 - `--format rgb565` 时：内部先生成 RGB565 源数据，再调用与 `fb.c` **同一个** RGB565→BGRA 转换函数写入 fb，用于验证降级路径。
 - 运行后抓屏（§8 命令）与上表逐项核对即 B2 通过。
@@ -163,6 +167,7 @@ main:
 ```sh
 #!/bin/sh
 DAEMON=/root/super_screen/super_screen_client
+PIDFILE=/var/run/superscreen_loop.pid
 start() {
   killall psplash 2>/dev/null
   for v in /sys/class/vtconsole/vtcon*; do
@@ -171,9 +176,14 @@ start() {
   done
   echo 0 > /sys/class/graphics/fb0/blank 2>/dev/null
   iw dev wlan0 set power_save off 2>/dev/null
-  while true; do "$DAEMON" >>/tmp/superscreen.log 2>&1; sleep 1; done &
+  [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null && return  # 已在运行
+  ( while true; do "$DAEMON" >>/tmp/superscreen.log 2>&1; sleep 1; done ) &
+  echo $! > "$PIDFILE"
 }
-stop() { killall super_screen_client 2>/dev/null; }
+stop() {
+  [ -f "$PIDFILE" ] && kill "$(cat "$PIDFILE")" 2>/dev/null; rm -f "$PIDFILE"  # 先停重启循环，否则 1s 内拉起
+  killall super_screen_client 2>/dev/null
+}
 case "$1" in start) start;; stop) stop;; restart) stop; start;; *) echo "usage: $0 {start|stop|restart}";; esac
 ```
 
@@ -211,7 +221,7 @@ ssh root@192.168.1.14 'cd /root/super_screen && nohup ./super_screen_client >/tm
 | B4 | mock LZ4 流 | `tools/mock_sender.py <板IP> --codec lz4` | 与 B3 效果一致；日志显示 LZ4 解码成功 |
 | B5 | 断线自愈 | 杀 mock → 重启 mock | 5s 内重连，全刷后画面恢复一致 |
 | B6 | 稳定性 | mock 变速内容跑 30min | 无崩溃；RSS 无持续增长；CPU/带宽记录在案 |
-| B7 | 延迟近似 | mock 静止 10s 后画一个 64x64 方块 | 板端 `lat_probe` 与 mock 发送时间戳差值 < 150ms（方法见总计划 §10） |
+| B7 | 延迟近似 | 先确认板端已对时（ntpd 运行，见总计划 §10）；mock 静止 10s 后画一个 64x64 方块 | 板端 `lat_probe` 与 mock 发送时间戳差值 < 150ms（方法见总计划 §10） |
 
 抓屏命令（总计划 §10）：`dd if=/dev/fb0 bs=4096 count=600 | convert -size 1024x600 -depth 8 bgra:- fb.png`（主机侧亦可先落地 raw 再转）。
 

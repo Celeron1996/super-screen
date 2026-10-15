@@ -71,12 +71,12 @@ git checkout -b dev/linux      # 然后按 docs/plan-imx6ull.md §0 执行
 git checkout -b dev/windows    # 然后按 docs/plan-windows.md §0 执行
 ```
 
-板端构建（Ubuntu，仓库根）：
+板端构建（Ubuntu，仓库根；需先按 `docs/plan-imx6ull.md` §2–§6 写出源码与 Makefile）：
 
 ```bash
 mkdir -p board/src board/tools board/scripts board/build tools
 cp docs/sssc.h board/src/sssc.h
-cd board && make HOST=1 && make   # 产物: build/super_screen_client
+cd board && make HOST=1 && make   # 编写完成后的自检与构建；产物: build/super_screen_client
 ```
 
 ## 文档索引
