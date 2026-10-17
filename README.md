@@ -5,7 +5,7 @@
 - Windows 侧通过**已签名**的开源 IddCx 虚拟显示驱动（VDD）注册虚拟显示器，系统"显示设置"中可见、可扩展；
 - `super_screen_win.exe` 采集虚拟屏画面，按 **SSSC 协议**（64x64 脏块 + 光标合成 + LZ4）经 TCP 5901 发往 IMX6ULL；
 - 板端 `super_screen_client` 直接写 `/dev/fb0`，支持断线重连、自动降级（RGB565 / 降 fps）；
-- 支持 **1024x600** 与 **800x480**（板端居中、四周黑边）两种模式；采集支持 DXGI（优先）与 GDI（回退）。
+- 分辨率自适应：**板端目标分辨率**可选（`--resolution WxH`，≤ 物理屏 1024x600，居中黑边）；Windows 虚拟屏分辨率任意（常用分辨率），发送端负责缩放到板端目标；采集支持 DXGI（优先）与 GDI（回退）。
 
 > **定位**：文档/聊天/音乐播放器等**准静态内容**的扩展屏。不承诺全屏视频/游戏——板端无 VPU、仅 WiFi（2.4GHz）带宽有限。
 
@@ -18,6 +18,7 @@
 | M1 | GDI 采集 + raw 分块 + 板端写 fb | 完成（已合入 main） |
 | M2 | LZ4、光标合成、全刷、背压、统计、双端自启 | 完成（已合入 main） |
 | M3 | DXGI Duplication（回退 GDI）、800x480、显示器位置跟踪 | 完成（PR #7 / #8） |
+| 分辨率自适应 | 板端目标分辨率可选（≤1024x600）+ Windows 任意虚拟分辨率缩放 | 完成（本次） |
 | M4 | USB RNDIS、驱动内集成 | 远期可选 |
 
 ## 目录
@@ -49,7 +50,8 @@ super_screen_win.exe:                                           │
 
 | 关键参数 | 值 |
 |---|---|
-| 虚拟屏 | 1024x600@60；800x480@60（板端居中黑边） |
+| 虚拟屏 | Windows 任意分辨率（常用 1024x600 / 1280x720 / 1920x1080 等） |
+| 板端目标 | `--resolution WxH`，默认 1024x600，≤ 物理屏；居中黑边 |
 | 传输 | TCP 5901，64x64 分块，单消息 payload ≤64KB，LZ4 逐块 |
 | 帧率 | 默认上限 20fps（背压 / SET_QUALITY 自适应下调，最低 5） |
 | 光标 | VDD 硬件光标不在采集画面内，由 Windows 端应用合成 |
@@ -158,7 +160,7 @@ win INFO session ready: scheduling full refresh
    ```
 
 3. 把本仓库的 `windows/vdd/vdd_settings.xml` 复制到 `C:\VirtualDisplayDriver\vdd_settings.xml`
-   （包含 1024x600@60 与 800x480@60）。
+   （默认包含 1024x600 / 800x480 及常用分辨率，如 1280x720、1366x768、1920x1080 等；可自行添加）。
 
 4. 扩展显示并设置分辨率：
 
@@ -259,19 +261,23 @@ DXGI 在初始化/帧获取失败时会打一次 WARN 并**自动永久回退 GD
 
 找不到目标屏时，应用会打印完整显示器清单并每 3s 重试。
 
-**运行时移动显示器**：应用每 3s 重新定位；同尺寸显示器被拖动/重排后会自动更新抓取区域并全刷
-（日志 `capture target moved to (x,y)`）。**分辨率变化**（1024↔800）需要修改
-`monitor_match` 并重启应用。
+**运行时变化**：应用每 3s 重新定位；显示器位置变化会更新抓取区域并全刷（日志
+`capture target moved to (x,y)`）；分辨率变化会按设备名重新定位、重建采集并全刷
+（日志 `capture target resized to WxH`），无需重启。Windows 端始终把画面缩放到板端目标分辨率后发送。
 
 > 注意：板端 LCD 只是显示端，**不是输入设备**。请把窗口拖到 Windows 的虚拟副屏上，
 > 不要拖到板子 LCD 表面。
 
-### 7. 800x480 模式
+### 7. 分辨率自适应（板端目标 + 虚拟屏）
 
-1. Windows"显示设置"中把虚拟副屏切到 **800x480@60**；
-2. `config.ini` 改 `monitor_match = 800x480`；
-3. 重启发送端；
-4. 板端自动把 800x480 内容**居中显示**在 1024x600 面板（四周黑边）。
+- **板端目标分辨率**：由板端启动参数 `--resolution WxH`（或 S99 的 `RESOLUTION`）决定，默认
+  1024x600，必须 ≤ 物理屏；板端把该尺寸的画面居中显示（四周黑边，不缩放）。
+- **Windows 虚拟屏分辨率**：在 Windows"显示设置"中选择（模式来自 `windows/vdd/vdd_settings.xml`，
+  常用分辨率可自行添加）；`monitor_match` 只负责定位，不限制分辨率。
+- 连接后 Windows 端从 `HELLO_ACK` 获取板端目标分辨率，把采集画面缩放到该尺寸再分块发送；
+  缩放只在 Windows 端做。`config.ini` 不需要配置板端分辨率。
+- 示例：板端 `RESOLUTION=800x480`、Windows 虚拟屏 1920x1080 → 发送端缩放到 800x480，
+  板端居中黑边显示。
 
 ### 8. 开机自启
 
@@ -345,11 +351,13 @@ ssh root@<板子IP> '/etc/init.d/S99superscreen stop'
 ### 4. 板端参数
 
 ```bash
-/root/super_screen/super_screen_client [--port 5901] [--format auto|bgra32|rgb565]
+/root/super_screen/super_screen_client [--port 5901] [--format auto|bgra32|rgb565] [--resolution WxH]
 ```
 
 - `--format auto`（默认）：尊重 Windows 端 `HELLO.format`；
-- 强制 `bgra32`/`rgb565` 时 `SET_QUALITY` 只下调 fps，不改变 format。
+- 强制 `bgra32`/`rgb565` 时 `SET_QUALITY` 只下调 fps，不改变 format；
+- `--resolution WxH`（默认 1024x600，必须 ≤ 物理屏）：板端目标显示分辨率；Windows 端通过
+  `HELLO_ACK` 获取后把画面缩放到该尺寸；板端居中显示（四周黑边）。
 
 ### 5. 日志与抓屏
 
@@ -380,6 +388,10 @@ convert -size 1024x600 -depth 8 bgra:fb.raw fb.png
 
 命令行：`--config FILE`、`--dump-frame FILE`、`--help`。
 
+- 虚拟屏分辨率在 Windows"显示设置"中设置，`monitor_match` 只用于定位；板端目标分辨率由板端
+  `--resolution`/S99 决定，Windows 端通过 `HELLO_ACK` 获取，无需在 `config.ini` 配置。
+- `--dump-frame` 保存的是**缩放后、实际发往板端的目标分辨率帧**，用于 A2 比对。
+
 ### 板端
 
 | 项 | 说明 |
@@ -387,6 +399,7 @@ convert -size 1024x600 -depth 8 bgra:fb.raw fb.png
 | 监听 | `0.0.0.0:5901`（TCP，SO_REUSEADDR） |
 | `--port N` | 修改监听端口 |
 | `--format F` | `auto`（默认）/`bgra32`/`rgb565` |
+| `--resolution WxH` | 板端目标显示分辨率（默认 1024x600，≤ 物理屏） |
 | 会话格式 | 本地强制值优先于 `HELLO.format` |
 | 背压降级 | 内核收包队列 >1MB 连续 3 次 → `SET_QUALITY`（先 RGB565，后降 fps） |
 | 断线 | 15s 无消息断开回监听；解析错误立即断开（自愈） |
@@ -439,7 +452,8 @@ python tools\mock_receiver.py --port 5901 --lz4-check
 | `connection refused` | 板端未监听 | 启动 S99；检查板端 IP（DHCP 可能变化） |
 | 部署时报 `Text file busy` | 客户端正在运行 | 先 `S99superscreen stop`，再 scp，再 start |
 | `DXGI duplication unavailable` | IDD 屏不支持 Duplication | 已自动回退 GDI，无需处理 |
-| 800x480 不生效 | 虚拟屏未切模式 / `monitor_match` 未改 | 显示设置切 800x480，改配置并重启发送端 |
+| 自定义分辨率不生效 | 板端分辨率未改 / 虚拟屏模式未选 | 改板端 S99 的 `RESOLUTION`（或 `--resolution`）并重启；虚拟屏在显示设置中选模式 |
+| 板端画面有黑边/尺寸不对 | 板端目标分辨率与预期不符 | 查看应用 `session ready: target WxH` 与板端 `HELLO ... target WxH` 日志；核对板端 `RESOLUTION` |
 | 提示找不到显示器 | 虚拟屏未扩展 / 匹配串错误 | `DisplaySwitch /extend`；改 `monitor_match`；看日志中的显示器清单 |
 | 卡顿/延迟高 | WiFi 拥塞、屏幕大面积变化 | 关闭占带宽应用；降低 `fps_cap`；板端会自动降为 RGB565 |
 | 板端变黑/花屏 | fbcon、psplash 或其他服务占屏 | 确认 S99 已解绑 fbcon/停 psplash；停无关应用 |
@@ -453,9 +467,9 @@ python tools\mock_receiver.py --port 5901 --lz4-check
 **Q：为什么拖到板子屏幕上没反应？**
 LCD 只是显示端，没有触摸/输入回传。请把窗口拖到 Windows 的虚拟副屏。
 
-**Q：虚拟副屏跑到别的位置了？**
-应用每 3s 自动跟踪位置变化；也可以在 Windows 显示设置里重新排列。分辨率变化需重启发送端
-并更新 `monitor_match`。
+**Q：虚拟副屏跑到别的位置/分辨率变了？**
+应用每 3s 自动跟踪位置变化；分辨率变化会按设备名重新定位、重建采集并全刷，无需重启。
+板端目标分辨率由板端 `--resolution`/S99 决定，Windows 端自动缩放到该尺寸。
 
 **Q：Windows 端要不要管理员？**
 日常运行不需要。安装 VDD、注册自启任务需要一次 UAC。
