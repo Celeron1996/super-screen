@@ -366,6 +366,7 @@ int Run(const Config& cfg, const char* dumpPath)
     uint64_t fullRefreshes = 0;
     uint64_t nextFrameMs = 0;
     uint64_t nextFindMs = 0;
+    uint64_t nextTargetCheckMs = 0;
     uint64_t statsMs = SteadyMs();
     uint64_t lastFrames = 0;
     uint64_t lastTiles = 0;
@@ -392,6 +393,21 @@ int Run(const Config& cfg, const char* dumpPath)
                 LogWarn("waiting for monitor '%s' (extend mode required)",
                         cfg.monitorMatch.c_str());
                 nextFindMs = now + 3000;
+            }
+        }
+
+        if (captureReady && now >= nextTargetCheckMs) {
+            nextTargetCheckMs = now + 3000;
+            MonitorTarget fresh;
+            std::vector<DisplayInfo> freshAll;
+            if (FindMonitorTarget(cfg.monitorMatch, &fresh, &freshAll) &&
+                fresh.width == target.width && fresh.height == target.height &&
+                (fresh.rect.left != target.rect.left ||
+                 fresh.rect.top != target.rect.top)) {
+                LogInfo("capture target moved to (%d,%d)", fresh.rect.left, fresh.rect.top);
+                target = fresh;
+                tiles.Invalidate();
+                pendingFull = true;
             }
         }
 
