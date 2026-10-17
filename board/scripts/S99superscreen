@@ -6,7 +6,7 @@ DAEMON=/root/super_screen/super_screen_client
 PIDFILE=/var/run/superscreen_loop.pid
 # 板端目标显示分辨率（宽x高，不得超过物理屏 1024x600）。
 # Windows 端会把虚拟屏画面缩放到该分辨率后发送。
-RESOLUTION=1024x600
+RESOLUTION=341x200
 
 start() {
     killall psplash 2>/dev/null
