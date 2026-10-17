@@ -69,9 +69,9 @@ bool LoadConfig(const wchar_t* iniPath, Config* cfg)
         LogWarn("tile size %d unsupported, forcing 64", cfg->tileSize);
         cfg->tileSize = 64;
     }
-    if (_stricmp(cfg->captureMode.c_str(), "gdi") != 0) {
-        LogWarn("capture mode '%s' not available in v1 (DXGI is M3), using gdi",
-                cfg->captureMode.c_str());
+    if (_stricmp(cfg->captureMode.c_str(), "gdi") != 0 &&
+        _stricmp(cfg->captureMode.c_str(), "dxgi") != 0) {
+        LogWarn("unknown capture mode '%s', using gdi", cfg->captureMode.c_str());
         cfg->captureMode = "gdi";
     }
 

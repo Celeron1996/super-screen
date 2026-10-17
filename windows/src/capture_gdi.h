@@ -17,6 +17,7 @@ public:
     bool Capture(const RECT& rect);
 
     const uint8_t* Data() const { return m_bits; }
+    uint8_t* MutableData() { return m_bits; }
     int Stride() const { return m_stride; }
     int Width() const { return m_width; }
     int Height() const { return m_height; }

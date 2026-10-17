@@ -14,6 +14,7 @@
 #include <string>
 #include <vector>
 
+#include "capture_dxgi.h"
 #include "capture_gdi.h"
 #include "config.h"
 #include "cursor.h"
@@ -308,10 +309,14 @@ int Run(const Config& cfg, const char* dumpPath)
     }
 
     GdiCapturer capturer;
+    DxgiCapturer dxgi;
     CursorCompositor cursor;
     TileEngine tiles;
     bool captureReady = false;
     bool cursorReady = false;
+    bool useDxgi = false;
+    bool dxgiHasFrame = false;
+    std::vector<uint8_t> dxgiFrame;
 
     const auto setupCapture = [&]() -> bool {
         if (!capturer.Init(target.width, target.height)) {
@@ -321,6 +326,20 @@ int Run(const Config& cfg, const char* dumpPath)
         tiles.SetFullRefreshSec(cfg.fullRefreshSec);
         if (cfg.compositeCursor && !cursorReady) {
             cursorReady = cursor.Init();
+        }
+        if (_stricmp(cfg.captureMode.c_str(), "dxgi") == 0) {
+            if (dxgi.Init(target.rect, target.width, target.height)) {
+                useDxgi = true;
+                dxgiHasFrame = false;
+                dxgiFrame.assign(static_cast<size_t>(target.width) *
+                                     static_cast<size_t>(target.height) * 4u,
+                                 0);
+                LogInfo("capture mode: DXGI Desktop Duplication");
+            } else {
+                dxgi.Shutdown();
+                useDxgi = false;
+                LogWarn("DXGI duplication unavailable, falling back to GDI");
+            }
         }
         return true;
     };
@@ -436,7 +455,25 @@ int Run(const Config& cfg, const char* dumpPath)
                     skipCount = 0;
                     burstGraceUntil = 0;
                     const uint64_t captureStart = SteadyMs();
-                    const bool captured = capturer.Capture(target.rect);
+                    bool captured = false;
+                    if (useDxgi) {
+                        const int rc = dxgi.Capture(dxgiFrame.data(), target.width * 4);
+                        if (rc > 0) {
+                            dxgiHasFrame = true;
+                        }
+                        if (rc >= 0 && dxgiHasFrame) {
+                            // 静态桌面时 DXGI 不产帧；复用缓存帧，保证光标合成基于无光标的桌面图
+                            std::memcpy(capturer.MutableData(), dxgiFrame.data(), dxgiFrame.size());
+                            captured = true;
+                        } else if (rc < 0) {
+                            useDxgi = false;
+                            dxgi.Shutdown();
+                            LogWarn("DXGI capture lost, falling back to GDI");
+                            captured = capturer.Capture(target.rect);
+                        }
+                    } else {
+                        captured = capturer.Capture(target.rect);
+                    }
                     if (captured) {
                         if (cfg.compositeCursor && cursorReady) {
                             cursor.Compose(capturer.MemDC(),
