@@ -1,0 +1,50 @@
+#!/bin/sh
+# S99superscreen — 板端开机自启（buildroot init 风格）
+# See docs/plan-imx6ull.md §5
+
+DAEMON=/root/super_screen/super_screen_client
+PIDFILE=/var/run/superscreen_loop.pid
+
+start() {
+    killall psplash 2>/dev/null
+    for v in /sys/class/vtconsole/vtcon*; do
+        [ -e "$v/name" ] || continue
+        if grep -q "frame buffer" "$v/name"; then
+            echo 0 > "$v/bind"
+        fi
+    done
+    echo 0 > /sys/class/graphics/fb0/blank 2>/dev/null
+    iw dev wlan0 set power_save off 2>/dev/null
+
+    if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
+        return
+    fi
+
+    ( while true; do "$DAEMON" >>/tmp/superscreen.log 2>&1; sleep 1; done ) &
+    echo $! > "$PIDFILE"
+}
+
+stop() {
+    if [ -f "$PIDFILE" ]; then
+        kill "$(cat "$PIDFILE")" 2>/dev/null
+        rm -f "$PIDFILE"
+    fi
+    killall super_screen_client 2>/dev/null
+}
+
+case "$1" in
+    start)
+        start
+        ;;
+    stop)
+        stop
+        ;;
+    restart)
+        stop
+        start
+        ;;
+    *)
+        echo "usage: $0 {start|stop|restart}"
+        exit 1
+        ;;
+esac
