@@ -60,5 +60,19 @@ VDD 安装、`vdd/vdd_settings.xml` 与验证记录（A1）在 M0 阶段补充�
 
 ## 自启（M2）
 
-不做 Windows 服务（会话 0 无交互桌面）。用任务计划程序注册"用户登录时启动"，
-触发延迟 30s，工作目录设为 exe 所在目录；具体步骤在 M2 验收时补入本节。
+不做 Windows 服务（服务运行在会话 0，取不到交互桌面与显示器拓扑）。用任务计划程序，
+触发器 = 用户登录，延迟 30s，工作目录 = exe 所在目录（`config.ini` 与 exe 必须同目录）：
+
+```powershell
+# 管理员 PowerShell；默认使用 build\x64\Release\super_screen_win.exe
+powershell -ExecutionPolicy Bypass -File windows\scripts\install_autostart.ps1
+
+# 指定部署路径
+powershell -ExecutionPolicy Bypass -File windows\scripts\install_autostart.ps1 `
+    -ExePath D:\apps\super_screen\super_screen_win.exe
+
+# 卸载
+powershell -ExecutionPolicy Bypass -File windows\scripts\install_autostart.ps1 -Uninstall
+```
+
+任务以当前用户的交互令牌运行（RunLevel Limited），注册任务需要管理员权限，应用本身不需要。
