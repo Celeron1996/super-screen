@@ -1,6 +1,6 @@
 /*
- * fb.c ??framebuffer ?????ile ?????RGB565 ???
- * See docs/PLAN.md ?5.4 ??docs/plan-imx6ull.md ?3.4
+ * fb.c — framebuffer 映射、tile 裁剪与 RGB565 转换
+ * See docs/PLAN.md §5.4 与 docs/plan-imx6ull.md §3.4
  */
 #include "fb.h"
 
@@ -165,4 +165,3 @@ void fb_close(fb_t *fb)
     memset(fb, 0, sizeof(*fb));
     fb->fd = -1;
 }
-
