@@ -32,7 +32,7 @@ cd windows\build\x64\Release
 | display.fps_cap | 20 | 帧率上限（SET_QUALITY 与背压只降不升） |
 | display.full_refresh_sec | 5 | 周期自愈全刷间隔（有脏块时才发） |
 | display.format | bgra32 | 初始建议格式，板端可经 HELLO_ACK/SET_QUALITY 决定 |
-| capture.mode | gdi | v1 仅 gdi（DXGI 为 M3，配置为 dxgi 时自动回退） |
+| capture.mode | gdi | gdi / dxgi；dxgi 优先 Desktop Duplication，失败自动回退 GDI |
 | capture.monitor_match | 1024x600 | `WxH` / `index:N` / `name:\\.\DISPLAYn` |
 | tile.size / lz4 | 64 / 1 | 分块大小固定 64；LZ4 开关 |
 | cursor.composite | 1 | 合成硬件光标（光标不在采集画面内） |
@@ -49,6 +49,9 @@ python tools\mock_receiver.py --port 5901 --lz4-check
 ```
 
 验收测试表（C1–C6）见 `docs/plan-windows.md` §7。
+
+M3：`capture.mode = dxgi` 已实现并在 VDD 上实测可用（Desktop Duplication，capture
+约 0.2–0.3ms）；800x480 会话由板端居中、四周留黑显示（A2 逐块比对 0 差异）。
 
 注意：用大于 1024x600 的物理屏做协议演练时，若画面 LZ4 压不动，单次全刷可能超过
 4MB 发送队列上限，日志出现 `queue full` 告警属预期（目标虚拟屏分辨率下无此问题）。
