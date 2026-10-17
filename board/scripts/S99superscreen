@@ -4,6 +4,9 @@
 
 DAEMON=/root/super_screen/super_screen_client
 PIDFILE=/var/run/superscreen_loop.pid
+# 板端目标显示分辨率（宽x高，不得超过物理屏 1024x600）。
+# Windows 端会把虚拟屏画面缩放到该分辨率后发送。
+RESOLUTION=1024x600
 
 start() {
     killall psplash 2>/dev/null
@@ -56,7 +59,8 @@ start() {
         return
     fi
 
-    ( while true; do "$DAEMON"; sleep 1; done ) </dev/null >>/tmp/superscreen.log 2>&1 &
+    ( while true; do "$DAEMON" --resolution "$RESOLUTION"; sleep 1; done ) \
+        </dev/null >>/tmp/superscreen.log 2>&1 &
     echo $! > "$PIDFILE"
 }
 

@@ -1,6 +1,6 @@
 /*
- * protocol.c ??SSSC v1 ?????ile ???????????????
- * See docs/PLAN.md ?5.3???.7 ??docs/plan-imx6ull.md ?3.3
+ * protocol.c — SSSC v1 解析、tile 应用、背压降级与统计
+ * See docs/PLAN.md §5.3–§5.7 与 docs/plan-imx6ull.md §3.3
  */
 #include "protocol.h"
 
@@ -13,13 +13,18 @@
 #include "sssc.h"
 #include "util.h"
 
-void sssc_ctx_init(sssc_ctx_t *ctx, fb_t *fb, int force_format)
+void sssc_ctx_init(sssc_ctx_t *ctx, fb_t *fb, int force_format,
+                   uint16_t target_w, uint16_t target_h)
 {
     memset(ctx, 0, sizeof(*ctx));
     ctx->fb = fb;
     ctx->force_format = force_format;
     ctx->format = SSSC_FMT_BGRA32;
     ctx->fps_cap = SSSC_FPS_CAP_DEFAULT;
+    ctx->target_w = target_w;
+    ctx->target_h = target_h;
+    ctx->width = target_w;
+    ctx->height = target_h;
     ctx->stats_ms = now_ms_monotonic();
 }
 
@@ -51,25 +56,6 @@ static int send_payload(int fd, sssc_ctx_t *ctx, uint16_t type,
     return 0;
 }
 
-#define BOARD_MODE_800_W 800
-#define BOARD_MODE_800_H 480
-
-static int board_mode_offset(uint16_t width, uint16_t height,
-                             int *off_x, int *off_y)
-{
-    if (width == SSSC_SCREEN_W && height == SSSC_SCREEN_H) {
-        *off_x = 0;
-        *off_y = 0;
-        return 0;
-    }
-    if (width == BOARD_MODE_800_W && height == BOARD_MODE_800_H) {
-        *off_x = (int)(SSSC_SCREEN_W - width) / 2;
-        *off_y = (int)(SSSC_SCREEN_H - height) / 2;
-        return 0;
-    }
-    return -1;
-}
-
 static int handle_hello(int fd, sssc_ctx_t *ctx, const uint8_t *payload,
                         uint32_t len)
 {
@@ -77,9 +63,11 @@ static int handle_hello(int fd, sssc_ctx_t *ctx, const uint8_t *payload,
     sssc_hello_ack ack;
     fb_t *fb = ctx->fb;
     int force = ctx->force_format;
+    uint16_t target_w = ctx->target_w;
+    uint16_t target_h = ctx->target_h;
+    int off_x;
+    int off_y;
     int fmt;
-    int off_x = 0;
-    int off_y = 0;
 
     if (len < sizeof(hello)) {
         LOG_ERR("HELLO payload too short (%u)", len);
@@ -92,12 +80,25 @@ static int handle_hello(int fd, sssc_ctx_t *ctx, const uint8_t *payload,
 
     memcpy(&hello, payload, sizeof(hello));
     memset(&ack, 0, sizeof(ack));
-    ack.width = hello.width;
-    ack.height = hello.height;
+    ack.width = target_w;
+    ack.height = target_h;
     ack.tile_size = SSSC_TILE_SIZE;
 
-    if (board_mode_offset(hello.width, hello.height, &off_x, &off_y) != 0) {
-        LOG_ERR("unsupported mode %ux%u", hello.width, hello.height);
+    if (hello.width == 0 || hello.height == 0) {
+        LOG_ERR("invalid virtual size %ux%u", hello.width, hello.height);
+        ack.format = SSSC_FMT_BGRA32;
+        ack.status = 1;
+        if (send_payload(fd, ctx, SSSC_TYPE_HELLO_ACK, &ack, sizeof(ack)) != 0) {
+            return -1;
+        }
+        return 1;
+    }
+
+    off_x = ((int)fb->width - (int)target_w) / 2;
+    off_y = ((int)fb->height - (int)target_h) / 2;
+    if (off_x < 0 || off_y < 0) {
+        LOG_ERR("target %ux%u exceeds panel %ux%u", target_w, target_h,
+                fb->width, fb->height);
         ack.format = SSSC_FMT_BGRA32;
         ack.status = 1;
         if (send_payload(fd, ctx, SSSC_TYPE_HELLO_ACK, &ack, sizeof(ack)) != 0) {
@@ -121,14 +122,16 @@ static int handle_hello(int fd, sssc_ctx_t *ctx, const uint8_t *payload,
     memset(ctx, 0, sizeof(*ctx));
     ctx->fb = fb;
     ctx->force_format = force;
+    ctx->target_w = target_w;
+    ctx->target_h = target_h;
     ctx->format = fmt;
     ctx->fps_cap = (hello.fps_cap == 0) ? SSSC_FPS_CAP_DEFAULT : hello.fps_cap;
     if (ctx->fps_cap < SSSC_FPS_CAP_MIN) {
         ctx->fps_cap = SSSC_FPS_CAP_MIN;
     }
     ctx->hello_done = 1;
-    ctx->width = hello.width;
-    ctx->height = hello.height;
+    ctx->width = target_w;
+    ctx->height = target_h;
     ctx->off_x = off_x;
     ctx->off_y = off_y;
     ctx->stats_ms = now_ms_monotonic();
@@ -143,7 +146,8 @@ static int handle_hello(int fd, sssc_ctx_t *ctx, const uint8_t *payload,
         return -1;
     }
 
-    LOG_INFO("HELLO %ux%u fmt=%u fps_cap=%u", hello.width, hello.height,
+    LOG_INFO("HELLO virtual %ux%u target %ux%u off=%d,%d fmt=%u fps_cap=%u",
+             hello.width, hello.height, target_w, target_h, off_x, off_y,
              ack.format, ctx->fps_cap);
     return 0;
 }
@@ -573,4 +577,3 @@ int sssc_serve_conn(int fd, sssc_ctx_t *ctx)
     free(buf);
     return ret;
 }
-

@@ -87,11 +87,12 @@ Get-CimInstance -Namespace root\wmi -ClassName WmiMonitorID    # 应出现副屏
 ```
 启动：读 config.ini → net_connect(板IP:5901) → 发 HELLO → 等 HELLO_ACK
 tick（默认 20fps，Sleep 对齐）:
-  1) capture     （采集虚拟屏 → BGRA 帧缓冲 2.4MB）
-  2) tiles_diff  （64x64 memcmp，得脏块表；必要时调度全刷）
-  3) cursor      （光标位置/形状变化 → 合成并追加脏块）
-  4) lz4 + send  （按 64KB 拆包；队列 >256KB 则本轮跳过）
-  5) 心跳/统计   （每 5s PING；每 5s 打印 脏块数/压缩比/KBps）
+  1) capture     （采集虚拟屏 → BGRA 源帧，尺寸 = 虚拟屏分辨率）
+  2) cursor      （光标合成到源帧）
+  3) scale       （按 HELLO_ACK 目标分辨率缩放源帧；StretchBlt/HALFTONE；目标=源时跳过）
+  4) tiles_diff  （目标分辨率 64x64 memcmp，得脏块表；必要时调度全刷）
+  5) lz4 + send  （按 64KB 拆包；队列 >256KB 则本轮跳过）
+  6) 心跳/统计   （每 5s PING；每 5s 打印 脏块数/压缩比/KBps）
 断线：net 层 1s 重试；重连后全刷。
 ```
 
@@ -101,7 +102,8 @@ tick（默认 20fps，Sleep 对齐）:
 - **DPI 感知必须在 `main()` 最先调用**：`SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)`（失败则退 `SetProcessDPIAware()`）。否则坐标被系统 DPI 虚拟化，采集区域整体错位。
 - **虚拟桌面原点可能为负**（副屏在主屏左侧/上方）：一切坐标以虚拟桌面坐标系为准（`SM_XVIRTUALSCREEN`/`SM_YVIRTUALSCREEN`）；GDI 对桌面 DC 的 `BitBlt` 支持负源坐标。
 - 未找到 → 打印完整显示器清单（设备名/位置/尺寸）+ 提示"虚拟屏未处于扩展模式"，每 3s 重试等待。
-- 分辨率不匹配 → 报错并提示用 `DisplaySwitch`/显示设置调整（应用不代改系统设置）。
+- **虚拟屏分辨率可任意**（常用模式在 VDD 的 `vdd_settings.xml` 中配置，Windows 显示设置选择）；`monitor_match` 只负责定位，不限制虚拟分辨率。
+- **运行时变化**：每 3s 重新定位；位置变化更新抓取矩形；分辨率变化按首次定位到的设备名回退定位，重建采集并全刷（目标分辨率由 ACK 决定，无需重连）。
 
 ### 4.3 capture_gdi.cpp（v1 基准）
 
@@ -117,7 +119,8 @@ tick（默认 20fps，Sleep 对齐）:
 
 ### 4.5 tiles.cpp
 
-- 维护 `prev[2.4MB]`；逐块（16x10=160）`memcmp`；块变化→记脏块。
+- 维护目标分辨率 `prev` 缓冲；逐块 `memcmp`（网格按 `HELLO_ACK` 目标宽高计算，默认 16x10=160）；块变化→记脏块。
+- 缩放属于 main/capture 层：源帧 = 虚拟屏分辨率，目标 = `HELLO_ACK` 宽高；tile 数据始终是目标分辨率。
 - **首帧/失效帧**：`prev` 初始为"无效"；连接后的第一帧以及每次变更 format（采纳 SET_QUALITY）后，`prev` 置无效 → 全部 tile 视为脏，并按 §5.7-4 发全刷。
 - 全刷调度（契约见 PLAN §5.5）：连续 3 帧脏块数 >120 → 触发；或距上次全刷 ≥5s 且仍有脏块 → 触发一次（自愈）；画面无脏块时不发全刷。
 - 拆包：单条 `TILES` payload ≤64KB，按脏块顺序装箱（一个 tile 的 14B 头 + data 不得跨消息拆开）。
@@ -137,7 +140,7 @@ tick（默认 20fps，Sleep 对齐）:
 ### 4.7 net.cpp
 
 - `WSAStartup(MAKEWORD(2,2))` 失败直接报错退出；socket → `TCP_NODELAY`；阻塞 connect 带 1s 超时重试。
-- **每次建立连接（含重连）后固定流程**：发 `HELLO`（`format/fps_cap` 取当前生效值，含粘滞降级）→ 3s 内等 `HELLO_ACK`；超时、`status≠0`（板端拒绝）或 `tile_size≠64` 均断开按 1s 重试（`status≠0` 打 ERR）→ 失效 `prev` → 全刷。`format/fps_cap` 以本连接 `HELLO_ACK` 为准。
+- **每次建立连接（含重连）后固定流程**：发 `HELLO`（宽高 = 虚拟屏分辨率；`format/fps_cap` 取当前生效值，含粘滞降级）→ 3s 内等 `HELLO_ACK`；超时、`status≠0`（板端拒绝）、`tile_size≠64` 或 ACK 宽高为 0 均断开按 1s 重试（`status≠0` 打 ERR）→ 按 **ACK 宽高** 配置 tile 网格并初始化缩放器 → 失效 `prev` → 全刷。`format/目标宽高` 以本连接 `HELLO_ACK` 为准。
 - 发送：非阻塞 send + 用户态队列（cap 4MB）；队列满时由 tiles 层决策**跳过本轮**或只整条丢弃**尚未开始发送**的消息（绝不截断半条消息）；丢弃造成的画面滞后由后续全刷自愈。
 - 心跳：每 5s 发 `PING`；15s 无 `PONG` 或 send 失败 → `closesocket` 后 1s 重连。
 - 所有协议结构体一律取自 `src/sssc.h`（pack(1)）；本机小端，对 `sizeof` 做 `static_assert`（头文件已含）。
@@ -146,7 +149,7 @@ tick（默认 20fps，Sleep 对齐）:
 
 - 每 5s 打印一行 `STATS`（格式见 PLAN §8.2），键含：`fps tiles_s tx_kbps rss_kb queue_kb full_refresh`；同行附 capture 耗时（均值/最大）、压缩比、当前 `fps_cap/format`。
 - **延迟探针**：处于"静止 → 首个变化帧"时打印 `lat_probe tx_ts=<unix毫秒>`（与板端 `lat_probe rx_ts` 对应，A3 近似测量，见总计划 §10）。
-- `--dump-frame <out.bmp>`：每次全刷结束时把当前帧存为 BMP（与板端抓屏做 A2 逐块比对）；可多次运行，文件被最近一次全刷覆盖，用于 C2/C3。
+- `--dump-frame <out.bmp>`：每次全刷结束时把**缩放后、发往板端的目标分辨率帧**存为 BMP（与板端抓屏做 A2 逐块比对）；可多次运行，文件被最近一次全刷覆盖，用于 C2/C3。
 
 ## 5. 配置项（config.ini）
 
@@ -173,6 +176,10 @@ composite = 1
 ```
 
 - `monitor_match` 的 `name:` 后接 Win32 设备名原文（如 `\\.\DISPLAY2`）；INI 值不做转义处理，`GetPrivateProfileString` 原样读取，按原文写入即可（不要增删反斜杠）。
+- 虚拟屏分辨率在 Windows“显示设置”中选择（模式来自 VDD 的 `vdd_settings.xml`，可自行添加常用分辨率，
+  如 1280x720/1920x1080）；`config.ini` 不限制虚拟分辨率，`monitor_match` 只负责定位。
+- 板端目标分辨率由板端 `--resolution WxH`（或 S99 的 `RESOLUTION`）决定，必须 ≤ 物理屏；Windows 端通过
+  `HELLO_ACK` 获取后把画面缩放到该尺寸发送，`config.ini` 无需配置板端分辨率。
 
 ## 6. 构建
 
@@ -198,10 +205,10 @@ composite = 1
 ### 7.1 tools/mock_receiver.py CLI 契约（Windows 负责人实现，用于无板自测）
 
 ```
-用法: python3 tools/mock_receiver.py [--port 5901] [--fmt bgra32|rgb565] [--set-quality RGB565[:FPS]] [--save DIR] [--lz4-check] [--log FILE]
+用法: python3 tools/mock_receiver.py [--port 5901] [--target WxH] [--fmt bgra32|rgb565] [--set-quality RGB565[:FPS]] [--save DIR] [--lz4-check] [--log FILE]
 行为要求:
   1. 监听 0.0.0.0:<port>，接受一个连接直到断开；断开后继续等待下一个连接（便于 C5）。
-  2. 收到 `HELLO` 必须回 `HELLO_ACK`（回显 width/height；`format` 默认回显 HELLO.format，`--fmt` 可强制覆盖以测降级；status=0，tile_size=64）；收到 `PING` 必须原样回显 `PONG`。缺任一项 Windows 端会一直等 ACK / 判心跳超时，C1/C5 无法通过。
+  2. 收到 `HELLO` 必须回 `HELLO_ACK`（width/height = `--target`，默认 1024x600，模拟板端目标分辨率；`format` 默认回显 HELLO.format，`--fmt` 可强制覆盖以测降级；status=0，tile_size=64）；收到 `PING` 必须原样回显 `PONG`。缺任一项 Windows 端会一直等 ACK / 判心跳超时，C1/C5 无法通过。
   3. 解析 SSSC：校验魔数/version/length；打印每条消息类型/seq/count/字节数；
      TILES 时逐块校验 w,h≤64、codec∈{0,1}、data_len 与剩余字节吻合、raw（codec=0）时 data_len == w*h*bpp（bpp 按本连接 ACK 的 format），任何不符计数并打印。
   4. 每 5s 打印一行 `STATS`，键名必须与 PLAN §8.2 一致：`frames tiles_s rx_kbps ratio errors pongs`（键值含义：消息数、tiles/s、接收速率、LZ4 压缩比、错误计数、PONG 应答次数）。
@@ -213,9 +220,9 @@ composite = 1
 
 ### 7.2 A2 画面比对方法（与板端联调时）
 
-1. Windows 端启动应用并加 `--dump-frame frame.bmp`，等全刷结束后得到 `frame.bmp`（1024x600 BGRA）。
+1. Windows 端启动应用并加 `--dump-frame frame.bmp`，等全刷结束后得到 `frame.bmp`（**缩放后的板端目标分辨率**，如 1024x600/800x480/960x540，BGRA）。
 2. 板端抓屏（总计划 §10 命令）得到原始 `fb.raw`（按需再转 `fb.png` 目检）。
-3. 比对：把两侧统一为**原始 BGRA** 后逐 64x64 块比较（`compare -metric AE` 只报像素差总数，不满足"逐块"判据）：`convert frame.bmp -depth 8 bgra:frame.raw`，板端抓屏命令直接产出 `fb.raw`；再用脚本（`cmp` 逐块或 Python 标准库）统计差异块，判据 **差异块数 = 0**（仅光标所涉 1–2 块有差时人工确认）。注意：LZ4 无损、不应有压缩误差；RGB565 会话存在色彩量化差，A2 应在 BGRA32 下执行。
+3. 比对：把两侧统一为**原始 BGRA** 后逐 64x64 块比较（`compare -metric AE` 只报像素差总数，不满足"逐块"判据）：`convert frame.bmp -depth 8 bgra:frame.raw`，板端抓屏命令直接产出 `fb.raw`；按板端居中偏移 `((1024-w)/2,(600-h)/2)` 裁剪 `fb.raw` 后与目标帧比较，判据 **差异块数 = 0**（仅光标所涉 1–2 块有差时人工确认）。注意：LZ4 无损、不应有压缩误差；RGB565 会话存在色彩量化差，A2 应在 BGRA32 下执行。
 
 ## 8. 风险与对策
 

@@ -17,11 +17,13 @@
 
 static void usage(const char *prog)
 {
-    printf("usage: %s [--port N] [--format auto|bgra32|rgb565] [--log FILE]\n",
-           prog);
+    printf("usage: %s [--port N] [--format auto|bgra32|rgb565] "
+           "[--resolution WxH] [--log FILE]\n", prog);
     printf("  --port N      listen port (default %u)\n", SSSC_PORT);
     printf("  --format F    force output format: auto|bgra32|rgb565 "
            "(default auto)\n");
+    printf("  --resolution WxH  target display size (default %ux%u, "
+           "must not exceed the panel)\n", SSSC_SCREEN_W, SSSC_SCREEN_H);
     printf("  --log FILE    append logs to FILE (default stdout)\n");
 }
 
@@ -43,6 +45,8 @@ int main(int argc, char **argv)
 {
     uint16_t port = SSSC_PORT;
     int force_format = -1;
+    uint16_t target_w = SSSC_SCREEN_W;
+    uint16_t target_h = SSSC_SCREEN_H;
     const char *log_path = NULL;
     fb_t fb;
     int lfd;
@@ -66,6 +70,17 @@ int main(int argc, char **argv)
                 LOG_ERR("invalid format: %s", argv[i]);
                 return 1;
             }
+        } else if (strcmp(argv[i], "--resolution") == 0 && i + 1 < argc) {
+            unsigned int w = 0;
+            unsigned int h = 0;
+
+            if (sscanf(argv[++i], "%ux%u", &w, &h) != 2 || w == 0 || h == 0 ||
+                w > 65535u || h > 65535u) {
+                LOG_ERR("invalid resolution: %s", argv[i]);
+                return 1;
+            }
+            target_w = (uint16_t)w;
+            target_h = (uint16_t)h;
         } else if (strcmp(argv[i], "--log") == 0 && i + 1 < argc) {
             log_path = argv[++i];
         } else {
@@ -94,6 +109,14 @@ int main(int argc, char **argv)
     if (fb_open("/dev/fb0", &fb) != 0) {
         return 2;
     }
+    if (target_w > fb.width || target_h > fb.height) {
+        LOG_ERR("resolution %ux%u exceeds panel %ux%u", target_w, target_h,
+                fb.width, fb.height);
+        fb_close(&fb);
+        return 1;
+    }
+    LOG_INFO("target resolution %ux%u (panel %ux%u)", target_w, target_h,
+             fb.width, fb.height);
     lfd = net_listen(port);
     if (lfd < 0) {
         fb_close(&fb);
@@ -111,7 +134,7 @@ int main(int argc, char **argv)
         }
 
         LOG_INFO("client connected");
-        sssc_ctx_init(&ctx, &fb, force_format);
+        sssc_ctx_init(&ctx, &fb, force_format, target_w, target_h);
         (void)sssc_serve_conn(cfd, &ctx);
         close(cfd);
         LOG_INFO("client disconnected");

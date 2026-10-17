@@ -82,7 +82,8 @@ void sssc_stats_log(sssc_ctx_t *ctx);            /* 每 5s 调用，打印一行
 
 ```
 main:
-  解析参数（--port 5901 --format auto --log /tmp/superscreen.log；format=auto|bgra32|rgb565，auto 尊重 HELLO.format）
+  解析参数（--port 5901 --format auto --resolution 1024x600 --log /tmp/superscreen.log；
+  format=auto|bgra32|rgb565，auto 尊重 HELLO.format；resolution=板端目标显示分辨率，≤ 物理屏）
   fb_open() 校验 1024x600x32，mmap
   listen socket（SO_REUSEADDR）
   for (;;) {
@@ -104,7 +105,7 @@ main:
 
 | 收到 | 行为 |
 |---|---|
-| HELLO | 宽高须为支持的显示模式（1024x600；M3 起含 800x480），否则回 `HELLO_ACK(status=1)` 后断开；最终 format = 本地强制值（`--format` 非 auto 时）否则 HELLO.format；回 HELLO_ACK（原样回显宽高、tile_size=64、status=0）；重置本连接统计 |
+| HELLO | HELLO 宽高 = Windows 虚拟屏分辨率（任意非零，仅记录/日志）；板端最终显示分辨率由启动参数 `--resolution` 决定（≤ 物理屏）；回 HELLO_ACK（宽高=目标分辨率、tile_size=64、status=0），HELLO 宽高为 0 时回 `status=1` 后断开；最终 format = 本地强制值（`--format` 非 auto 时）否则 HELLO.format；重置本连接统计 |
 | TILES | 遍历 tile：`codec=0` 先校验 `data_len == w*h*bpp` 再 `fb_apply_tile`；`codec=1` 先用 `LZ4_decompress_safe` 解到 16KB 暂存（`SSSC_TILE_MAX_RAW`），解压长度须 == `w*h*bpp`（bpp 按本连接最终 format）；任一校验不符即断连触发全刷自愈（格式切换窗口内例外，见下） |
 | FULL_BEGIN/END | 重置/记录全刷统计 |
 | PING | 回 PONG（原样回显 timestamp） |
@@ -124,7 +125,7 @@ main:
   out = ((r<<3)|(r>>2))<<16 | ((g<<2)|(g>>4))<<8 | ((b<<3)|(b>>2))   // 按内存序 B,G,R,A 写入
   ```
 
-- M3 起：若本连接尺寸为 800x480，写入前对坐标加居中偏移 (112,60)（不缩放，四周留黑）；进入该模式的首个全刷前可将整屏清黑一次，避免旧内容残留在边框区。
+- 目标分辨率小于物理屏时，写入前对坐标加居中偏移 `((1024-w)/2, (600-h)/2)`（不缩放，四周留黑）；进入该模式时整屏清黑一次，避免旧内容残留在边框区。目标分辨率默认 1024x600，通过 `--resolution WxH` 选择（不得大于物理屏）。
 - 首帧到达前保持 fb 原内容（psplash 已被杀，残留最后画面）。
 
 ### 3.5 统计与日志
@@ -169,6 +170,8 @@ main:
 #!/bin/sh
 DAEMON=/root/super_screen/super_screen_client
 PIDFILE=/var/run/superscreen_loop.pid
+# 板端目标显示分辨率（<= 物理屏 1024x600）；Windows 端会缩放到该尺寸
+RESOLUTION=1024x600
 start() {
   killall psplash 2>/dev/null
   for v in /sys/class/vtconsole/vtcon*; do
@@ -178,7 +181,7 @@ start() {
   echo 0 > /sys/class/graphics/fb0/blank 2>/dev/null
   iw dev wlan0 set power_save off 2>/dev/null
   [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null && return  # 已在运行
-  ( while true; do "$DAEMON" >>/tmp/superscreen.log 2>&1; sleep 1; done ) &
+  ( while true; do "$DAEMON" --resolution "$RESOLUTION" >>/tmp/superscreen.log 2>&1; sleep 1; done ) &
   echo $! > "$PIDFILE"
 }
 stop() {
@@ -249,6 +252,8 @@ ssh root@192.168.1.14 'cd /root/super_screen && nohup ./super_screen_client >/tm
 6. Ctrl-C 退出码 0，并打印汇总（总帧数/总字节/平均 Mbps/最长连续静止时长）。
 7. 每 5s 发送 `PING` 并记录 `PONG` 往返毫秒（`STATS` 的 `pong_rtt`，超时记 -1 并打 WARN；不因心跳超时主动断开，运行时长由 `--seconds`/Ctrl-C 控制）。
 8. 收到 `SET_QUALITY` 立即采纳 `format/fps_cap` 并清空干净帧缓冲（下帧起全刷），与 Windows 端行为一致。
+9. 注：mock_sender 的图案固定 1024x600，适用于板端默认目标 1024x600；测试其他板端目标分辨率请使用
+   Windows 发送端（会把画面缩放到 `HELLO_ACK` 目标）。
 
 ### 8.2 tools/screenshot_board.sh（主机抓屏封装）
 

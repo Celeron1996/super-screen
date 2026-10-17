@@ -339,9 +339,8 @@ void NetClient::HandleMessage(uint16_t type, const uint8_t* payload, uint32_t le
                 CloseAndRetry(nowMs, "HELLO_ACK tile_size");
                 return;
             }
-            if (static_cast<int>(ack.width) != m_helloW ||
-                static_cast<int>(ack.height) != m_helloH) {
-                CloseAndRetry(nowMs, "HELLO_ACK size mismatch");
+            if (ack.width == 0 || ack.height == 0) {
+                CloseAndRetry(nowMs, "HELLO_ACK target size");
                 return;
             }
             if (ack.format != SSSC_FMT_BGRA32 && ack.format != SSSC_FMT_RGB565) {
@@ -349,11 +348,14 @@ void NetClient::HandleMessage(uint16_t type, const uint8_t* payload, uint32_t le
                 return;
             }
             m_sessionFormat = ack.format;
+            m_sessionWidth = static_cast<int>(ack.width);
+            m_sessionHeight = static_cast<int>(ack.height);
             m_state = State::Ready;
             m_readyEdge = true;
             m_lastPong = nowMs;
             m_lastPing = nowMs;
-            LogInfo("HELLO_ACK ok, session %ux%u format=%u", ack.width, ack.height, ack.format);
+            LogInfo("HELLO_ACK ok, target %ux%u (virtual %dx%d) format=%u", ack.width,
+                    ack.height, m_helloW, m_helloH, ack.format);
             return;
         }
         case SSSC_TYPE_PONG:
