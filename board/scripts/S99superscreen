@@ -1,0 +1,86 @@
+#!/bin/sh
+# S99superscreen — 板端开机自启（buildroot init 风格）
+# See docs/plan-imx6ull.md §5
+
+DAEMON=/root/super_screen/super_screen_client
+PIDFILE=/var/run/superscreen_loop.pid
+
+start() {
+    killall psplash 2>/dev/null
+    for v in /sys/class/vtconsole/vtcon*; do
+        [ -e "$v/name" ] || continue
+        if grep -q "frame buffer" "$v/name"; then
+            echo 0 > "$v/bind"
+        fi
+    done
+    echo 0 > /sys/class/graphics/fb0/blank 2>/dev/null
+
+    # rtl8723bu 是 USB 设备，可能晚于网络脚本枚举；这里兜底拉起 WiFi
+    n=0
+    while [ ! -e /sys/class/net/wlan0 ] && [ "$n" -lt 10 ]; do
+        sleep 1
+        n=$((n + 1))
+    done
+    if [ -e /sys/class/net/wlan0 ]; then
+        ifconfig wlan0 up 2>/dev/null
+        # rtl8723bu 的 IPS/SmartPS 会显著抬高延迟、压低吞吐
+        for p in rtw_power_mgnt rtw_smart_ps rtw_ips_mode; do
+            if [ -w "/sys/module/8723bu/parameters/$p" ]; then
+                echo 0 > "/sys/module/8723bu/parameters/$p" 2>/dev/null
+            fi
+        done
+        if ! ps w | grep -q "[w]pa_supplicant"; then
+            wpa_supplicant -B -i wlan0 -c /etc/wpa_supplicant.conf 2>/dev/null
+        fi
+        n=0
+        while [ "$n" -lt 10 ]; do
+            iw dev wlan0 link 2>/dev/null | grep -q "Connected" && break
+            sleep 1
+            n=$((n + 1))
+        done
+        if ! ps w | grep -q "[u]dhcpc"; then
+            if ! ifconfig wlan0 2>/dev/null | grep -q "inet addr"; then
+                udhcpc -i wlan0 -b 2>/dev/null
+            fi
+        fi
+        n=0
+        while [ "$n" -lt 10 ]; do
+            ifconfig wlan0 2>/dev/null | grep -q "inet addr" && break
+            sleep 1
+            n=$((n + 1))
+        done
+        iw dev wlan0 set power_save off 2>/dev/null
+    fi
+
+    if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
+        return
+    fi
+
+    ( while true; do "$DAEMON"; sleep 1; done ) </dev/null >>/tmp/superscreen.log 2>&1 &
+    echo $! > "$PIDFILE"
+}
+
+stop() {
+    if [ -f "$PIDFILE" ]; then
+        kill "$(cat "$PIDFILE")" 2>/dev/null
+        rm -f "$PIDFILE"
+    fi
+    killall super_screen_client 2>/dev/null
+}
+
+case "$1" in
+    start)
+        start
+        ;;
+    stop)
+        stop
+        ;;
+    restart)
+        stop
+        start
+        ;;
+    *)
+        echo "usage: $0 {start|stop|restart}"
+        exit 1
+        ;;
+esac
