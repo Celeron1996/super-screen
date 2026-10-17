@@ -1,6 +1,6 @@
 /*
- * protocol.c — SSSC v1 解析、tile 应用、背压降级与统计
- * See docs/PLAN.md §5.3–§5.7 与 docs/plan-imx6ull.md §3.3
+ * protocol.c ??SSSC v1 ?????ile ???????????????
+ * See docs/PLAN.md ?5.3???.7 ??docs/plan-imx6ull.md ?3.3
  */
 #include "protocol.h"
 
@@ -51,6 +51,25 @@ static int send_payload(int fd, sssc_ctx_t *ctx, uint16_t type,
     return 0;
 }
 
+#define BOARD_MODE_800_W 800
+#define BOARD_MODE_800_H 480
+
+static int board_mode_offset(uint16_t width, uint16_t height,
+                             int *off_x, int *off_y)
+{
+    if (width == SSSC_SCREEN_W && height == SSSC_SCREEN_H) {
+        *off_x = 0;
+        *off_y = 0;
+        return 0;
+    }
+    if (width == BOARD_MODE_800_W && height == BOARD_MODE_800_H) {
+        *off_x = (int)(SSSC_SCREEN_W - width) / 2;
+        *off_y = (int)(SSSC_SCREEN_H - height) / 2;
+        return 0;
+    }
+    return -1;
+}
+
 static int handle_hello(int fd, sssc_ctx_t *ctx, const uint8_t *payload,
                         uint32_t len)
 {
@@ -59,6 +78,8 @@ static int handle_hello(int fd, sssc_ctx_t *ctx, const uint8_t *payload,
     fb_t *fb = ctx->fb;
     int force = ctx->force_format;
     int fmt;
+    int off_x = 0;
+    int off_y = 0;
 
     if (len < sizeof(hello)) {
         LOG_ERR("HELLO payload too short (%u)", len);
@@ -75,9 +96,8 @@ static int handle_hello(int fd, sssc_ctx_t *ctx, const uint8_t *payload,
     ack.height = hello.height;
     ack.tile_size = SSSC_TILE_SIZE;
 
-    if (hello.width != SSSC_SCREEN_W || hello.height != SSSC_SCREEN_H) {
-        LOG_ERR("unsupported mode %ux%u (need %ux%u)",
-                hello.width, hello.height, SSSC_SCREEN_W, SSSC_SCREEN_H);
+    if (board_mode_offset(hello.width, hello.height, &off_x, &off_y) != 0) {
+        LOG_ERR("unsupported mode %ux%u", hello.width, hello.height);
         ack.format = SSSC_FMT_BGRA32;
         ack.status = 1;
         if (send_payload(fd, ctx, SSSC_TYPE_HELLO_ACK, &ack, sizeof(ack)) != 0) {
@@ -109,7 +129,12 @@ static int handle_hello(int fd, sssc_ctx_t *ctx, const uint8_t *payload,
     ctx->hello_done = 1;
     ctx->width = hello.width;
     ctx->height = hello.height;
+    ctx->off_x = off_x;
+    ctx->off_y = off_y;
     ctx->stats_ms = now_ms_monotonic();
+    if (off_x != 0 || off_y != 0) {
+        fb_clear(fb);
+    }
 
     ack.format = (uint8_t)fmt;
     ack.status = SSSC_STATUS_OK;
@@ -238,7 +263,8 @@ static int handle_tiles(int fd, sssc_ctx_t *ctx, const uint8_t *payload,
             return -1;
         }
 
-        fb_apply_tile(ctx->fb, tile.x, tile.y, tile.w, tile.h,
+        fb_apply_tile(ctx->fb, (int)tile.x + ctx->off_x,
+                      (int)tile.y + ctx->off_y, tile.w, tile.h,
                       data, ctx->format);
         ctx->tiles_applied++;
         if (ctx->win_active && ctx->win_full_active) {
@@ -547,3 +573,4 @@ int sssc_serve_conn(int fd, sssc_ctx_t *ctx)
     free(buf);
     return ret;
 }
+
