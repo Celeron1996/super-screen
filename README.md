@@ -66,27 +66,76 @@ super_screen_win.exe:                                           │
 
 ## 快速开始（首次跑通）
 
-假设：板端已部署并运行客户端，Windows 已安装 VDD 并在显示设置中扩展出 1024x600 副屏。
+下面分别给出 **Linux 端（板端）** 与 **Windows 端（发送端）** 的最短路径；两边都完成后即可镜像。
+细节见后续对应章节。
 
-```powershell
-# 1) 板端确认监听（在板子或 Ubuntu 上）
-ssh root@<板子IP>
-ss -ltn | grep 5901          # 应有 LISTEN
-ps w | grep super_screen_client
+### Linux 端（板端：构建 → 部署 → 启动）
 
-# 2) Windows 端：复制 exe 与配置到同一目录，修改 config.ini 的 server.ip
-copy windows\build\x64\Release\super_screen_win.exe D:\apps\super_screen\
-copy windows\config.ini D:\apps\super_screen\
+要求：Ubuntu 构建机可 SSH 登录板端（`root`），板端与 Windows 在同一局域网。
 
-# 3) 运行发送端
-cd D:\apps\super_screen
-.\super_screen_win.exe
+```bash
+# 1) 工具链加入 PATH（100ask SDK；~/.bashrc 已有则新开终端即可）
+export PATH=$PATH:/home/book/100ask_imx6ull-sdk/ToolChain/arm-buildroot-linux-gnueabihf_sdk-buildroot/bin
 
-# 4) 把窗口拖到"显示设置"里的 1024x600 虚拟副屏（主屏右侧）
-#    板端 LCD 应实时镜像；日志出现 HELLO_ACK ok 即成功
+# 2) 构建（仓库根目录）
+cd ~/100ask_development_board/project/super_screen
+make -C board clean
+make -C board HOST=1
+make -C board
+
+# 3) 部署（先停客户端，避免覆盖时报 "Text file busy"）
+ssh root@<板子IP> '/etc/init.d/S99superscreen stop'
+scp board/build/super_screen_client board/build/test_pattern \
+    root@<板子IP>:/root/super_screen/
+
+# 4) 首次安装自启脚本（已安装可跳过），然后启动
+scp board/scripts/S99superscreen root@<板子IP>:/etc/init.d/
+ssh root@<板子IP> 'chmod +x /etc/init.d/S99superscreen; /etc/init.d/S99superscreen start'
+
+# 5) 确认监听（应有 LISTEN）
+ssh root@<板子IP> 'ss -ltn | grep 5901; ps w | grep super_screen_client | grep -v grep'
 ```
 
-停止发送端：`Ctrl-C`，或 `Stop-Process -Name super_screen_win`。
+板端 IP 默认为 DHCP（示例 `192.168.1.14`），请用串口或路由器确认后替换 `<板子IP>`。
+
+### Windows 端（VDD → 构建 → 配置 → 运行）
+
+要求：Windows 10/11 x64、VS2022（"使用 C++ 的桌面开发"）、已安装已签名 VDD。
+若尚未安装 VDD，先按下文"Windows 端详细教程 → 安装 VDD"完成，并扩展出 1024x600 副屏。
+
+```powershell
+# 1) 扩展显示（VDD 已安装；显示设置里把虚拟副屏设为 1024x600@60、缩放 100%、主屏右侧）
+DisplaySwitch.exe /extend
+
+# 2) 构建（也可直接使用已有的 exe）
+msbuild windows\super_screen.sln /p:Configuration=Release /p:Platform=x64
+
+# 3) 部署到同一目录，并把 server.ip 改成板子 IP
+copy windows\build\x64\Release\super_screen_win.exe D:\apps\super_screen\
+copy windows\config.ini D:\apps\super_screen\
+notepad D:\apps\super_screen\config.ini      # [server] ip = <板子IP>
+
+# 4) 运行
+cd D:\apps\super_screen
+.\super_screen_win.exe
+```
+
+连接成功的关键日志：
+
+```
+win INFO capture target \\.\DISPLAY15 1024x600 at (2560,0)
+win INFO HELLO_ACK ok, session 1024x600 format=0
+win INFO session ready: scheduling full refresh
+```
+
+### 验证与停止
+
+- 把任意窗口拖到 Windows 的 **1024x600 虚拟副屏**（主屏右侧，不是板子 LCD 表面）；
+  板端 LCD 应实时镜像。虚拟副屏位置变化后约 3s 内应用会自动跟踪。
+- 停止发送端：`Ctrl-C` 或 `Stop-Process -Name super_screen_win`
+- 停止板端：`ssh root@<板子IP> '/etc/init.d/S99superscreen stop'`
+- 无板自测：Ubuntu/本机运行 `python tools/mock_receiver.py --port 5901 --lz4-check`，
+  再把 Windows `config.ini` 的 `server.ip` 改为该机器 IP（本机即 `127.0.0.1`）后运行发送端。
 
 ## Windows 端详细教程
 
