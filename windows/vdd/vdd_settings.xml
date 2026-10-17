@@ -1,0 +1,35 @@
+<?xml version='1.0' encoding='utf-8'?>
+<vdd_settings>
+    <monitors>
+        <count>1</count>
+    </monitors>
+    <gpu>
+        <friendlyname>default</friendlyname>
+    </gpu>
+    <global>
+        <g_refresh_rate>60</g_refresh_rate>
+    </global>
+    <resolutions>
+        <resolution>
+            <width>1024</width>
+            <height>600</height>
+            <refresh_rate>60</refresh_rate>
+        </resolution>
+        <resolution>
+            <width>800</width>
+            <height>480</height>
+            <refresh_rate>60</refresh_rate>
+        </resolution>
+    </resolutions>
+    <options>
+        <CustomEdid>false</CustomEdid>
+        <PreventSpoof>false</PreventSpoof>
+        <EdidCeaOverride>false</EdidCeaOverride>
+        <!-- 文档方案依赖应用侧合成光标，故保持硬件光标开启 -->
+        <HardwareCursor>true</HardwareCursor>
+        <SDR10bit>false</SDR10bit>
+        <HDRPlus>false</HDRPlus>
+        <logging>false</logging>
+        <debuglogging>false</debuglogging>
+    </options>
+</vdd_settings>
