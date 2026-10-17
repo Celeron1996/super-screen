@@ -1,6 +1,6 @@
 /*
- * fb.c — framebuffer 映射、tile 裁剪与 RGB565 转换
- * See docs/PLAN.md §5.4 与 docs/plan-imx6ull.md §3.4
+ * fb.c ??framebuffer ?????ile ?????RGB565 ???
+ * See docs/PLAN.md ?5.4 ??docs/plan-imx6ull.md ?3.4
  */
 #include "fb.h"
 
@@ -143,6 +143,14 @@ void fb_apply_tile(fb_t *fb, int x, int y, int w, int h,
     }
 }
 
+void fb_clear(fb_t *fb)
+{
+    if (fb == NULL || fb->base == NULL) {
+        return;
+    }
+    memset(fb->base, 0, (size_t)fb->stride * fb->height);
+}
+
 void fb_close(fb_t *fb)
 {
     if (fb == NULL) {
@@ -157,3 +165,4 @@ void fb_close(fb_t *fb)
     memset(fb, 0, sizeof(*fb));
     fb->fd = -1;
 }
+
