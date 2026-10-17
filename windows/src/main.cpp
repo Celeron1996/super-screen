@@ -5,6 +5,7 @@
 #include <winsock2.h>
 #include <windows.h>
 #include <psapi.h>
+#include <timeapi.h>
 
 #include <algorithm>
 #include <chrono>
@@ -352,6 +353,8 @@ int Run(const Config& cfg, const char* dumpPath)
     uint64_t captureSum = 0;
     uint64_t captureMax = 0;
     uint64_t captureCount = 0;
+    uint64_t dirtySum = 0;
+    uint64_t dirtyMax = 0;
     uint64_t lastChangeUnix = 0;
 
     while (InterlockedCompareExchange(&g_stop, 1, 1) == 0) {
@@ -441,6 +444,8 @@ int Run(const Config& cfg, const char* dumpPath)
 
                         std::vector<TileRect> dirty;
                         tiles.CollectDirty(capturer.Data(), capturer.Stride(), &dirty);
+                        dirtySum += dirty.size();
+                        dirtyMax = std::max(dirtyMax, static_cast<uint64_t>(dirty.size()));
                         const bool full =
                             pendingFull ||
                             tiles.ShouldFullRefresh(static_cast<int>(dirty.size()), now);
@@ -496,16 +501,21 @@ int Run(const Config& cfg, const char* dumpPath)
                 captureCount != 0
                     ? static_cast<double>(captureSum) / static_cast<double>(captureCount)
                     : 0.0;
+            const double dirtyAvg =
+                captureCount != 0
+                    ? static_cast<double>(dirtySum) / static_cast<double>(captureCount)
+                    : 0.0;
             LogStats("fps=%.1f tiles_s=%.1f tx_kbps=%.1f rss_kb=%llu queue_kb=%llu "
                      "full_refresh=%llu capture_ms_avg=%.2f capture_ms_max=%llu ratio=%.2f "
-                     "fps_cap=%d format=%d",
+                     "dirty_avg=%.1f dirty_max=%llu fps_cap=%d format=%d",
                      static_cast<double>(frames - lastFrames) / sec,
                      static_cast<double>(tilesTotal - lastTiles) / sec,
                      static_cast<double>(tx - lastTx) * 8.0 / 1000.0 / sec,
                      static_cast<unsigned long long>(CurrentRssKb()),
                      static_cast<unsigned long long>(net.QueueBytes() / 1024u),
                      static_cast<unsigned long long>(fullRefreshes), captureAvg,
-                     static_cast<unsigned long long>(captureMax), ratio, effectiveFps,
+                     static_cast<unsigned long long>(captureMax), ratio, dirtyAvg,
+                     static_cast<unsigned long long>(dirtyMax), effectiveFps,
                      sender.Format());
             statsMs = now;
             lastFrames = frames;
@@ -514,6 +524,8 @@ int Run(const Config& cfg, const char* dumpPath)
             captureSum = 0;
             captureMax = 0;
             captureCount = 0;
+            dirtySum = 0;
+            dirtyMax = 0;
         }
 
         Sleep(1);
@@ -531,6 +543,7 @@ int Run(const Config& cfg, const char* dumpPath)
 int main(int argc, char** argv)
 {
     LogInit();
+    timeBeginPeriod(1);  // Sleep(1) 默认量化 ~15.6ms，会让 20fps 上限掉到 ~16fps
     const char* dumpPath = nullptr;
     const char* configPath = nullptr;
     for (int i = 1; i < argc; ++i) {
@@ -561,6 +574,7 @@ int main(int argc, char** argv)
     }
     LogInfo("super_screen_win starting");
     const int rc = Run(cfg, dumpPath);
+    timeEndPeriod(1);
     LogInfo("exit code %d", rc);
     return rc;
 }
