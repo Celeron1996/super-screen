@@ -342,6 +342,7 @@ int Run(const Config& cfg, const char* dumpPath)
     int backpressureFps = cfg.fpsCap;
     bool pendingFull = true;
     int skipCount = 0;
+    uint64_t burstGraceUntil = 0;
     uint64_t frames = 0;
     uint64_t fullRefreshes = 0;
     uint64_t nextFrameMs = 0;
@@ -384,6 +385,7 @@ int Run(const Config& cfg, const char* dumpPath)
             pendingFull = true;
             backpressureFps = cfg.fpsCap;
             skipCount = 0;
+            burstGraceUntil = 0;
             sender.ResetSeq();
             if (captureReady) {
                 tiles.Invalidate();
@@ -419,16 +421,20 @@ int Run(const Config& cfg, const char* dumpPath)
             if (now >= nextFrameMs) {
                 nextFrameMs = now + static_cast<uint64_t>(1000 / effectiveFps);
                 if (net.QueueBytes() > SSSC_SEND_QUEUE_SKIP) {
-                    ++skipCount;
-                    if (skipCount >= 3) {
-                        backpressureFps =
-                            std::max(static_cast<int>(SSSC_FPS_CAP_MIN), backpressureFps / 2);
-                        skipCount = 0;
-                        LogWarn("backpressure: 3 consecutive skips, fps_cap -> %d",
-                                backpressureFps);
+                    // 全刷突发是我们自己瞬间入队的，短暂豁免降帧，避免每次全刷后误降
+                    if (now >= burstGraceUntil) {
+                        ++skipCount;
+                        if (skipCount >= 3) {
+                            backpressureFps = std::max(
+                                static_cast<int>(SSSC_FPS_CAP_MIN), backpressureFps / 2);
+                            skipCount = 0;
+                            LogWarn("backpressure: 3 consecutive skips, fps_cap -> %d",
+                                    backpressureFps);
+                        }
                     }
                 } else {
                     skipCount = 0;
+                    burstGraceUntil = 0;
                     const uint64_t captureStart = SteadyMs();
                     const bool captured = capturer.Capture(target.rect);
                     if (captured) {
@@ -458,6 +464,7 @@ int Run(const Config& cfg, const char* dumpPath)
                                 pendingFull = false;
                                 backpressureFps = cfg.fpsCap;
                                 skipCount = 0;
+                                burstGraceUntil = now + 5000;
                                 ++fullRefreshes;
                                 if (dumpPath != nullptr &&
                                     SaveBmp(dumpPath, capturer.Data(), target.width,
