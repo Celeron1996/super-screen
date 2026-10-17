@@ -23,6 +23,7 @@
 #include "monitor.h"
 #include "net.h"
 #include "protocol_util.h"
+#include "scaler.h"
 #include "sssc.h"
 #include "tiles.h"
 
@@ -317,13 +318,15 @@ int Run(const Config& cfg, const char* dumpPath)
     bool useDxgi = false;
     bool dxgiHasFrame = false;
     std::vector<uint8_t> dxgiFrame;
+    FrameScaler scaler;
+    bool useScaler = false;
+    int sessionW = 0;
+    int sessionH = 0;
 
     const auto setupCapture = [&]() -> bool {
         if (!capturer.Init(target.width, target.height)) {
             return false;
         }
-        tiles.Configure(target.width, target.height, cfg.tileSize);
-        tiles.SetFullRefreshSec(cfg.fullRefreshSec);
         if (cfg.compositeCursor && !cursorReady) {
             cursorReady = cursor.Init();
         }
@@ -400,14 +403,62 @@ int Run(const Config& cfg, const char* dumpPath)
             nextTargetCheckMs = now + 3000;
             MonitorTarget fresh;
             std::vector<DisplayInfo> freshAll;
-            if (FindMonitorTarget(cfg.monitorMatch, &fresh, &freshAll) &&
-                fresh.width == target.width && fresh.height == target.height &&
-                (fresh.rect.left != target.rect.left ||
-                 fresh.rect.top != target.rect.top)) {
-                LogInfo("capture target moved to (%d,%d)", fresh.rect.left, fresh.rect.top);
-                target = fresh;
-                tiles.Invalidate();
-                pendingFull = true;
+            bool found = FindMonitorTarget(cfg.monitorMatch, &fresh, &freshAll);
+            if (!found) {
+                // 分辨率变化会使命中串失效；按首次定位到的设备名重新找到同一块屏
+                std::vector<DisplayInfo> all;
+                if (EnumDisplays(&all)) {
+                    for (const DisplayInfo& info : all) {
+                        if (info.device == target.device) {
+                            fresh.rect = info.rect;
+                            fresh.primary = info.primary;
+                            fresh.device = info.device;
+                            fresh.width = info.rect.right - info.rect.left;
+                            fresh.height = info.rect.bottom - info.rect.top;
+                            found = true;
+                            break;
+                        }
+                    }
+                }
+            }
+            if (found) {
+                const bool moved = fresh.rect.left != target.rect.left ||
+                                   fresh.rect.top != target.rect.top;
+                const bool resized = fresh.width != target.width ||
+                                     fresh.height != target.height;
+                if (resized) {
+                    LogInfo("capture target resized to %dx%d at (%d,%d)", fresh.width,
+                            fresh.height, fresh.rect.left, fresh.rect.top);
+                    target = fresh;
+                    if (!capturer.Init(target.width, target.height)) {
+                        LogError("capture reinit failed");
+                    }
+                    if (useDxgi) {
+                        dxgi.Shutdown();
+                        if (!dxgi.Init(target.rect, target.width, target.height)) {
+                            useDxgi = false;
+                            LogWarn("DXGI reinit failed, falling back to GDI");
+                        }
+                        dxgiHasFrame = false;
+                        dxgiFrame.assign(static_cast<size_t>(target.width) *
+                                             static_cast<size_t>(target.height) * 4u,
+                                         0);
+                    }
+                    if (sessionW > 0 && sessionH > 0) {
+                        useScaler = (sessionW != target.width || sessionH != target.height);
+                        if (useScaler && !scaler.Resize(sessionW, sessionH)) {
+                            LogError("scaler reinit failed for %dx%d", sessionW, sessionH);
+                        }
+                    }
+                    tiles.Invalidate();
+                    pendingFull = true;
+                } else if (moved) {
+                    LogInfo("capture target moved to (%d,%d)", fresh.rect.left,
+                            fresh.rect.top);
+                    target = fresh;
+                    tiles.Invalidate();
+                    pendingFull = true;
+                }
             }
         }
 
@@ -422,10 +473,25 @@ int Run(const Config& cfg, const char* dumpPath)
             skipCount = 0;
             burstGraceUntil = 0;
             sender.ResetSeq();
+            sessionW = net.SessionWidth();
+            sessionH = net.SessionHeight();
+            requestedFormat = net.SessionFormat();
+            sender.SetFormat(requestedFormat);
+            if (sessionW <= 0 || sessionH <= 0) {
+                LogError("invalid session target %dx%d", sessionW, sessionH);
+            }
             if (captureReady) {
+                tiles.Configure(sessionW, sessionH, cfg.tileSize);
+                tiles.SetFullRefreshSec(cfg.fullRefreshSec);
                 tiles.Invalidate();
             }
-            LogInfo("session ready: scheduling full refresh");
+            useScaler = (sessionW != target.width || sessionH != target.height);
+            if (useScaler && !scaler.Resize(sessionW, sessionH)) {
+                LogError("scaler init failed for %dx%d", sessionW, sessionH);
+                useScaler = false;
+            }
+            LogInfo("session ready: target %dx%d, virtual %dx%d, scale=%d", sessionW,
+                    sessionH, target.width, target.height, useScaler ? 1 : 0);
         }
 
         NetQuality quality;
@@ -496,13 +562,23 @@ int Run(const Config& cfg, const char* dumpPath)
                                            const_cast<uint8_t*>(capturer.Data()), target.width,
                                            target.height, capturer.Stride(), target.rect);
                         }
+                        const uint8_t* frame = capturer.Data();
+                        int frameStride = capturer.Stride();
+                        if (useScaler) {
+                            if (scaler.Scale(capturer.MemDC(), target.width, target.height)) {
+                                frame = scaler.Data();
+                                frameStride = scaler.Stride();
+                            } else {
+                                LogWarn("frame scaling failed, sending unscaled frame");
+                            }
+                        }
                         const uint64_t capMs = SteadyMs() - captureStart;
                         captureSum += capMs;
                         captureMax = std::max(captureMax, capMs);
                         ++captureCount;
 
                         std::vector<TileRect> dirty;
-                        tiles.CollectDirty(capturer.Data(), capturer.Stride(), &dirty);
+                        tiles.CollectDirty(frame, frameStride, &dirty);
                         dirtySum += dirty.size();
                         dirtyMax = std::max(dirtyMax, static_cast<uint64_t>(dirty.size()));
                         const bool full =
@@ -510,8 +586,7 @@ int Run(const Config& cfg, const char* dumpPath)
                             tiles.ShouldFullRefresh(static_cast<int>(dirty.size()), now);
                         bool sent = true;
                         if (full) {
-                            sent = sender.Send(capturer.Data(), capturer.Stride(),
-                                               tiles.AllTiles(), true);
+                            sent = sender.Send(frame, frameStride, tiles.AllTiles(), true);
                             if (sent) {
                                 tiles.OnFullRefresh(now);
                                 pendingFull = false;
@@ -520,14 +595,13 @@ int Run(const Config& cfg, const char* dumpPath)
                                 burstGraceUntil = now + 5000;
                                 ++fullRefreshes;
                                 if (dumpPath != nullptr &&
-                                    SaveBmp(dumpPath, capturer.Data(), target.width,
-                                            target.height, capturer.Stride())) {
+                                    SaveBmp(dumpPath, frame, sessionW, sessionH,
+                                            frameStride)) {
                                     LogInfo("dump-frame saved to %s", dumpPath);
                                 }
                             }
                         } else if (!dirty.empty()) {
-                            sent =
-                                sender.Send(capturer.Data(), capturer.Stride(), dirty, false);
+                            sent = sender.Send(frame, frameStride, dirty, false);
                         }
                         if (!sent) {
                             pendingFull = true;

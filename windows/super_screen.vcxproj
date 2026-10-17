@@ -90,6 +90,7 @@
     <ClCompile Include="src\monitor.cpp" />
     <ClCompile Include="src\capture_gdi.cpp" />
     <ClCompile Include="src\capture_dxgi.cpp" />
+    <ClCompile Include="src\scaler.cpp" />
     <ClCompile Include="src\cursor.cpp" />
     <ClCompile Include="src\tiles.cpp" />
     <ClCompile Include="src\lz4wrap.cpp" />
@@ -106,6 +107,7 @@
     <ClInclude Include="src\monitor.h" />
     <ClInclude Include="src\capture_gdi.h" />
     <ClInclude Include="src\capture_dxgi.h" />
+    <ClInclude Include="src\scaler.h" />
     <ClInclude Include="src\cursor.h" />
     <ClInclude Include="src\tiles.h" />
     <ClInclude Include="src\lz4wrap.h" />

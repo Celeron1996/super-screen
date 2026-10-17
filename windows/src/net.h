@@ -30,6 +30,8 @@ public:
     bool IsReady() const { return m_state == State::Ready; }
     bool ConsumeReadyEdge();
     int SessionFormat() const { return m_sessionFormat; }
+    int SessionWidth() const { return m_sessionWidth; }
+    int SessionHeight() const { return m_sessionHeight; }
 
     bool Enqueue(const void* data, size_t len);
     size_t QueueBytes() const { return m_queuedBytes; }
@@ -70,6 +72,8 @@ private:
     int m_helloFormat = 0;
     int m_helloFps = 20;
     int m_sessionFormat = 0;
+    int m_sessionWidth = 0;
+    int m_sessionHeight = 0;
 
     std::deque<OutMsg> m_queue;
     size_t m_queuedBytes = 0;

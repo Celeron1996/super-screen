@@ -223,12 +223,15 @@ class Session:
         self.fmt = ack_fmt
         self.bpp = self.bpp_for(ack_fmt)
         self.hello_fps = fps if fps >= SSSC_FPS_CAP_MIN else SSSC_FPS_CAP_MIN
-        ack = ACK_P.pack(width, height, ack_fmt, 0, SSSC_TILE_SIZE, 0)
+        target_w, target_h = self.args.target
+        self.width = target_w
+        self.height = target_h
+        ack = ACK_P.pack(target_w, target_h, ack_fmt, 0, SSSC_TILE_SIZE, 0)
         self.send_msg(T_HELLO_ACK, ack)
         self.handshaken = True
         self.handshake_at = time.time()
-        log("INFO", "HELLO %dx%d fmt=%d fps=%d -> ACK fmt=%d"
-            % (width, height, fmt, fps, ack_fmt), self.logf)
+        log("INFO", "HELLO %dx%d fmt=%d fps=%d -> ACK target %dx%d fmt=%d"
+            % (width, height, fmt, fps, target_w, target_h, ack_fmt), self.logf)
         return True
 
     def on_tiles(self, length, payload):
@@ -336,9 +339,25 @@ def parse_set_quality(text):
     return fmt, fps
 
 
+def parse_resolution(text):
+    parts = text.lower().split("x")
+    if len(parts) != 2:
+        raise argparse.ArgumentTypeError("resolution must be WxH")
+    try:
+        width = int(parts[0])
+        height = int(parts[1])
+    except ValueError:
+        raise argparse.ArgumentTypeError("resolution must be WxH") from None
+    if width <= 0 or height <= 0 or width > 65535 or height > 65535:
+        raise argparse.ArgumentTypeError("resolution out of range")
+    return width, height
+
+
 def main():
     parser = argparse.ArgumentParser(description="SSSC v1 mock receiver")
     parser.add_argument("--port", type=int, default=SSSC_PORT)
+    parser.add_argument("--target", type=parse_resolution, default=(1024, 600),
+                        metavar="WxH", help="HELLO_ACK target resolution (default 1024x600)")
     parser.add_argument("--fmt", choices=["bgra32", "rgb565"], default=None,
                         help="force HELLO_ACK format (default: echo HELLO.format)")
     parser.add_argument("--set-quality", type=parse_set_quality, default=None,
