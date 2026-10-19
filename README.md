@@ -16,9 +16,10 @@
 | 文档 | 总计划 + 协议契约 + 两端施工文档 | 完成 |
 | M0 | VDD 安装、1024x600@60 副屏、A1 | Win10 完成；Win11 验证挂起 |
 | M1 | GDI 采集 + raw 分块 + 板端写 fb | 完成（已合入 main） |
-| M2 | LZ4、光标合成、全刷、背压、统计、双端自启 | 完成（已合入 main） |
+| M2 | LZ4、光标合成、全刷、背压、统计、板端自启 | 完成（已合入 main） |
 | M3 | DXGI Duplication（回退 GDI）、800x480、显示器位置跟踪 | 完成（PR #7 / #8） |
 | 分辨率自适应 | 板端目标分辨率可选（≤1024x600）+ Windows 任意虚拟分辨率缩放 | 完成（本次） |
+| 按需副屏 | 点击应用后先选分辨率，再启用 VDD；退出时移除，不随开机出现 | 完成（本次） |
 | M4 | USB RNDIS、驱动内集成 | 远期可选 |
 
 ## 目录
@@ -103,21 +104,19 @@ ssh root@<板子IP> 'ss -ltn | grep 5901; ps w | grep super_screen_client | grep
 ### Windows 端（VDD → 构建 → 配置 → 运行）
 
 要求：Windows 10/11 x64、VS2022（"使用 C++ 的桌面开发"）、已安装已签名 VDD。
-若尚未安装 VDD，先按下文"Windows 端详细教程 → 安装 VDD"完成，并扩展出 1024x600 副屏。
+若尚未安装 VDD，先按下文"Windows 端详细教程 → 安装 VDD"完成。驱动保持安装；应用正常退出后
+会禁用 VDD 设备，副屏由应用在用户点击启动后按需创建，不再随开机自动出现。
 
 ```powershell
-# 1) 扩展显示（VDD 已安装；显示设置里把虚拟副屏设为 1024x600@60、缩放 100%、主屏右侧）
-DisplaySwitch.exe /extend
-
-# 2) 构建（也可直接使用已有的 exe）
+# 1) 构建（也可直接使用已有的 exe）
 msbuild windows\super_screen.sln /p:Configuration=Release /p:Platform=x64
 
-# 3) 部署到同一目录，并把 server.ip 改成板子 IP
+# 2) 部署到同一目录，并把 server.ip 改成板子 IP
 copy windows\build\x64\Release\super_screen_win.exe D:\apps\super_screen\
 copy windows\config.ini D:\apps\super_screen\
 notepad D:\apps\super_screen\config.ini      # [server] ip = <板子IP>
 
-# 4) 运行
+# 3) 运行（UAC；先选分辨率，确认后才创建虚拟副屏）
 cd D:\apps\super_screen
 .\super_screen_win.exe
 ```
@@ -125,16 +124,18 @@ cd D:\apps\super_screen
 连接成功的关键日志：
 
 ```
+win INFO virtual display \\.\DISPLAY15 active at 1024x600
 win INFO capture target \\.\DISPLAY15 1024x600 at (2560,0)
-win INFO HELLO_ACK ok, session 1024x600 format=0
-win INFO session ready: scheduling full refresh
+win INFO HELLO_ACK ok, target 1024x600 (virtual 1024x600) format=0
+win INFO session ready: target 1024x600, virtual 1024x600, scale=0
 ```
 
 ### 验证与停止
 
-- 把任意窗口拖到 Windows 的 **1024x600 虚拟副屏**（主屏右侧，不是板子 LCD 表面）；
+- 把任意窗口拖到 Windows 的**所选分辨率的虚拟副屏**（主屏右侧，不是板子 LCD 表面）；
   板端 LCD 应实时镜像。虚拟副屏位置变化后约 3s 内应用会自动跟踪。
-- 停止发送端：`Ctrl-C` 或 `Stop-Process -Name super_screen_win`
+- 停止发送端：在控制台按 `Ctrl-C`（正常退出并移除虚拟副屏）；不要用 `Stop-Process` 强杀，
+  否则退出清理不会执行，副屏可能保留到下次开机。
 - 停止板端：`ssh root@<板子IP> '/etc/init.d/S99superscreen stop'`
 - 无板自测：Ubuntu/本机运行 `python tools/mock_receiver.py --port 5901 --lz4-check`，
   再把 Windows `config.ini` 的 `server.ip` 改为该机器 IP（本机即 `127.0.0.1`）后运行发送端。
@@ -162,19 +163,15 @@ win INFO session ready: scheduling full refresh
 3. 把本仓库的 `windows/vdd/vdd_settings.xml` 复制到 `C:\VirtualDisplayDriver\vdd_settings.xml`
    （默认包含 1024x600 / 800x480 及常用分辨率，如 1280x720、1366x768、1920x1080 等；可自行添加）。
 
-4. 扩展显示并设置分辨率：
+4. 无需手动扩展或设置分辨率：运行 `super_screen_win.exe` 时会先弹出分辨率选择框，
+   确认后应用会启用 VDD、切换扩展模式并设置所选分辨率；退出应用时再禁用 VDD。
+   可选模式来自 `C:\VirtualDisplayDriver\vdd_settings.xml`（常用分辨率可自行添加）。
 
-   ```powershell
-   DisplaySwitch.exe /extend
-   ```
-
-   在"设置 → 系统 → 显示"中选中虚拟副屏：**1024x600、缩放 100%、置于主屏右侧**。
-
-5. 验证：
+5. 验证（应用运行期间）：
 
    ```powershell
    Get-PnpDevice -Class Display | Format-Table Status,FriendlyName
-   Get-CimInstance -Namespace root\wmi -ClassName WmiMonitorID   # 应出现 VDD 的 EDID
+   Get-CimInstance -Namespace root\wmi -ClassName WmiMonitorID   # 应用运行时应出现 VDD 的 EDID
    ```
 
    **风险提示**：VDD 安装有官方已知的小概率黑屏问题。新机器请先确认可回滚；异常时按
@@ -272,30 +269,26 @@ DXGI 在初始化/帧获取失败时会打一次 WARN 并**自动永久回退 GD
 
 - **板端目标分辨率**：由板端启动参数 `--resolution WxH`（或 S99 的 `RESOLUTION`）决定，默认
   1024x600，必须 ≤ 物理屏；板端把该尺寸的画面居中显示（四周黑边，不缩放）。
-- **Windows 虚拟屏分辨率**：在 Windows"显示设置"中选择（模式来自 `windows/vdd/vdd_settings.xml`，
-  常用分辨率可自行添加）；`monitor_match` 只负责定位，不限制分辨率。
+- **Windows 虚拟屏分辨率**：点击应用后，在启动时的选择框中选择（模式来自
+  `C:\VirtualDisplayDriver\vdd_settings.xml`，常用分辨率可自行添加）；应用会启用 VDD、
+  扩展桌面并设置该模式，退出时禁用 VDD。`monitor_match` 只负责定位，不限制分辨率。
 - 连接后 Windows 端从 `HELLO_ACK` 获取板端目标分辨率，把采集画面缩放到该尺寸再分块发送；
   缩放只在 Windows 端做。`config.ini` 不需要配置板端分辨率。
 - 示例：板端 `RESOLUTION=800x480`、Windows 虚拟屏 1920x1080 → 发送端缩放到 800x480，
   板端居中黑边显示。
 
-### 8. 开机自启
+### 8. 启动方式（不再开机自启）
 
-不做 Windows 服务（服务在会话 0，取不到交互桌面与显示器拓扑）。用任务计划程序：
+按需求改为**点击应用后再创建虚拟副屏**：不再注册登录自启任务，也不在开机时扩展 VDD 副屏。
+直接双击 `super_screen_win.exe`（或桌面快捷方式），在分辨率选择框确认后使用；退出时应用会
+禁用 VDD。若旧机器上注册过旧版任务，先删除：
 
 ```powershell
-# 管理员 PowerShell；默认使用 build\x64\Release\super_screen_win.exe
-powershell -ExecutionPolicy Bypass -File windows\scripts\install_autostart.ps1
-
-# 指定部署路径
-powershell -ExecutionPolicy Bypass -File windows\scripts\install_autostart.ps1 `
-    -ExePath D:\apps\super_screen\super_screen_win.exe
-
-# 卸载
-powershell -ExecutionPolicy Bypass -File windows\scripts\install_autostart.ps1 -Uninstall
+# 管理员 PowerShell
+powershell -ExecutionPolicy Bypass -File windows\scripts\remove_autostart.ps1
 ```
 
-任务：当前用户登录后延迟 30s 启动，工作目录 = exe 目录（`config.ini` 必须与 exe 同目录）。
+应用每次启动都需要 UAC（启停 VDD 设备），工作目录 = exe 目录（`config.ini` 与 exe 同目录）。
 
 ## 板端详细教程
 
@@ -380,16 +373,21 @@ convert -size 1024x600 -depth 8 bgra:fb.raw fb.png
 | `display.fps_cap` | 20 | 帧率上限；背压/SET_QUALITY 只降不升 |
 | `display.full_refresh_sec` | 5 | 周期自愈全刷间隔（有脏块时才发） |
 | `display.format` | bgra32 | 初始建议格式；最终以 `HELLO_ACK.format` 为准 |
+| `display.manage_vdd` | 1 | 1=应用启动时启用 VDD、退出时禁用；0=使用已有显示器 |
+| `display.virtual_resolution` | 1024x600 | 分辨率选择框的默认项；选择成功后写回 |
 | `capture.mode` | gdi | `gdi` / `dxgi`；dxgi 失败自动回退 |
-| `capture.monitor_match` | 1024x600 | `WxH` / `index:N` / `name:\\.\DISPLAYn` |
+| `capture.monitor_match` | 1024x600 | `WxH` / `index:N` / `name:\\.\DISPLAYn`；管理 VDD 时运行时自动改为设备名 |
 | `tile.size` | 64 | 固定 64（协议常量） |
 | `tile.lz4` | 1 | 0=只用 raw，1=优先 LZ4 |
 | `cursor.composite` | 1 | 合成 VDD 硬件光标 |
 
-命令行：`--config FILE`、`--dump-frame FILE`、`--help`。
+命令行：`--config FILE`、`--dump-frame FILE`、`--resolution WxH`（跳过选择框）、
+`--no-vdd`（不管理虚拟屏）、`--help`。
 
-- 虚拟屏分辨率在 Windows"显示设置"中设置，`monitor_match` 只用于定位；板端目标分辨率由板端
-  `--resolution`/S99 决定，Windows 端通过 `HELLO_ACK` 获取，无需在 `config.ini` 配置。
+- 在默认的 `manage_vdd=1` 模式下，启动应用时先选择分辨率，应用再启用 VDD 并按设备名定位；
+  `monitor_match` 无需手工维护。板端目标分辨率仍由板端 `--resolution`/S99 决定，Windows 端通过
+  `HELLO_ACK` 获取并在发送前缩放，`config.ini` 无需配置板端分辨率。
+- `--no-vdd` 或 `manage_vdd=0` 时回到旧行为：不启停 VDD，按 `monitor_match` 定位已有显示器。
 - `--dump-frame` 保存的是**缩放后、实际发往板端的目标分辨率帧**，用于 A2 比对。
 
 ### 板端
@@ -454,7 +452,9 @@ python tools\mock_receiver.py --port 5901 --lz4-check
 | `DXGI duplication unavailable` | IDD 屏不支持 Duplication | 已自动回退 GDI，无需处理 |
 | 自定义分辨率不生效 | 板端分辨率未改 / 虚拟屏模式未选 | 改板端 S99 的 `RESOLUTION`（或 `--resolution`）并重启；虚拟屏在显示设置中选模式 |
 | 板端画面有黑边/尺寸不对 | 板端目标分辨率与预期不符 | 查看应用 `session ready: target WxH` 与板端 `HELLO ... target WxH` 日志；核对板端 `RESOLUTION` |
-| 提示找不到显示器 | 虚拟屏未扩展 / 匹配串错误 | `DisplaySwitch /extend`；改 `monitor_match`；看日志中的显示器清单 |
+| 提示找不到显示器 | 虚拟屏未创建 / 匹配串错误 | 使用默认 `manage_vdd=1` 让应用创建；或应用运行后 `DisplaySwitch /extend`；改 `monitor_match`；看日志中的显示器清单 |
+| 开机后仍自动出现虚拟副屏 | 旧版本未正常退出，或仍注册了旧自启任务 | 运行一次新版应用并正常退出；删除旧任务：`Unregister-ScheduledTask -TaskName super_screen_win -Confirm:$false` |
+| 强制结束应用后副屏仍在 | 进程被强杀，未执行退出清理 | 重新运行应用并正常退出（Ctrl-C），或管理员执行 `pnputil /disable-device "ROOT\DISPLAY\0001"` |
 | 卡顿/延迟高 | WiFi 拥塞、屏幕大面积变化 | 关闭占带宽应用；降低 `fps_cap`；板端会自动降为 RGB565 |
 | 板端变黑/花屏 | fbcon、psplash 或其他服务占屏 | 确认 S99 已解绑 fbcon/停 psplash；停无关应用 |
 | VDD 安装后黑屏（主机） | VDD 已知问题 | 安全模式卸载 VDD（见 `windows/vdd/install_notes.md`） |
@@ -469,10 +469,12 @@ LCD 只是显示端，没有触摸/输入回传。请把窗口拖到 Windows 的
 
 **Q：虚拟副屏跑到别的位置/分辨率变了？**
 应用每 3s 自动跟踪位置变化；分辨率变化会按设备名重新定位、重建采集并全刷，无需重启。
+应用退出后副屏会被移除（这是预期行为），下次启动会重新创建并让你选择分辨率。
 板端目标分辨率由板端 `--resolution`/S99 决定，Windows 端自动缩放到该尺寸。
 
 **Q：Windows 端要不要管理员？**
-日常运行不需要。安装 VDD、注册自启任务需要一次 UAC。
+需要。创建/移除虚拟副屏要启停 VDD 设备，应用清单为 `requireAdministrator`，每次启动会有
+UAC 提示。`--no-vdd` 只是跳过设备管理，不改变清单的权限要求。
 
 **Q：板子 IP 变了？**
 DHCP 可能导致变化；串口 `ip addr` 或路由器后台查询，改 `config.ini` 的 `server.ip`。
@@ -514,7 +516,7 @@ super_screen/
 | `docs/sssc.h` | 协议唯一权威定义（两端原样复制） |
 | `docs/plan-imx6ull.md` | 板端施工说明与 B1–B7 |
 | `docs/plan-windows.md` | Windows 施工说明与 C1–C6 |
-| `windows/README.md` | Windows 构建/配置/自启补充 |
+| `windows/README.md` | Windows 构建/配置/按需创建副屏补充 |
 | `windows/vdd/install_notes.md` | VDD 安装、验证与回滚记录 |
 
 ## 技术栈

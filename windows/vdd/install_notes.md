@@ -43,6 +43,19 @@
 - 物理控制台"显示设置"肉眼确认建议由人工完成（命令行枚举已确认设备与模式）。
 - 建议显示缩放保持 100%（本机为 1024x600 小屏，Windows 默认通常为 100%）。
 
+## 按需创建（2026-10 调整）
+
+- 驱动保持安装，但应用未运行时 VDD 设备默认禁用，因此开机后不会自动出现虚拟副屏。
+- `super_screen_win.exe` 启动时先让用户选择分辨率，再启用 VDD、设置模式；退出时禁用。
+- 手动检查/清理（管理员）：
+
+  ```powershell
+  pnputil /disable-device "ROOT\DISPLAY\0001"
+  pnputil /enable-device  "ROOT\DISPLAY\0001"
+  ```
+
+  实例 ID 以 `pnputil /enum-devices /class Display` 的实际输出为准。
+
 ## 回滚 / 卸载
 
 1. 优先：以管理员运行 `VDD Control.exe UNINSTALL_DRIVER`（或设备管理器卸载 "Virtual Display Driver"）。

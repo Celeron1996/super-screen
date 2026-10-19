@@ -39,6 +39,9 @@ bool LoadConfig(const wchar_t* iniPath, Config* cfg)
         cfg->fullRefreshSec = ReadIniInt(iniPath, L"display", L"full_refresh_sec", 5);
         const std::string format = ReadIniString(iniPath, L"display", L"format", L"bgra32");
         cfg->format = (_stricmp(format.c_str(), "rgb565") == 0) ? 1 : 0;
+        cfg->manageVdd = ReadIniInt(iniPath, L"display", L"manage_vdd", 1) != 0;
+        cfg->virtualResolution =
+            ReadIniString(iniPath, L"display", L"virtual_resolution", L"1024x600");
         cfg->captureMode = ReadIniString(iniPath, L"capture", L"mode", L"gdi");
         cfg->monitorMatch = ReadIniString(iniPath, L"capture", L"monitor_match", L"1024x600");
         cfg->tileSize = ReadIniInt(iniPath, L"tile", L"size", 64);
@@ -75,10 +78,20 @@ bool LoadConfig(const wchar_t* iniPath, Config* cfg)
         cfg->captureMode = "gdi";
     }
 
-    LogInfo("config server=%s:%d fps_cap=%d full_refresh=%ds format=%s monitor_match=%s "
-            "tile=%d lz4=%d cursor=%d",
+    LogInfo("config server=%s:%d fps_cap=%d full_refresh=%ds format=%s manage_vdd=%d "
+            "virtual_resolution=%s monitor_match=%s tile=%d lz4=%d cursor=%d",
             cfg->serverIp.c_str(), cfg->serverPort, cfg->fpsCap, cfg->fullRefreshSec,
-            cfg->format == 1 ? "rgb565" : "bgra32", cfg->monitorMatch.c_str(), cfg->tileSize,
+            cfg->format == 1 ? "rgb565" : "bgra32", cfg->manageVdd ? 1 : 0,
+            cfg->virtualResolution.c_str(), cfg->monitorMatch.c_str(), cfg->tileSize,
             cfg->lz4 ? 1 : 0, cfg->compositeCursor ? 1 : 0);
     return true;
+}
+
+void SaveVirtualResolution(const wchar_t* iniPath, int width, int height)
+{
+    wchar_t value[64] = {};
+    swprintf_s(value, L"%dx%d", width, height);
+    if (WritePrivateProfileStringW(L"display", L"virtual_resolution", value, iniPath) == FALSE) {
+        LogWarn("failed to save virtual_resolution to config.ini");
+    }
 }

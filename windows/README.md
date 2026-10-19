@@ -18,9 +18,16 @@ msbuild windows\super_screen.sln /p:Configuration=Release /p:Platform=x64
 
 ```powershell
 cd windows\build\x64\Release
-.\super_screen_win.exe [--config FILE] [--dump-frame frame.bmp]
+.\super_screen_win.exe [--config FILE] [--dump-frame frame.bmp] [--resolution WxH] [--no-vdd]
 ```
 
+- 直接双击或运行 exe 时，会先弹出**分辨率选择框**，确认后才启用虚拟副屏；可用模式来自
+  `C:\VirtualDisplayDriver\vdd_settings.xml`。
+- 虚拟副屏**只在应用运行期间存在**：启动时启用 VDD 设备，退出（包括 Ctrl-C）时禁用。
+  因此应用没有运行时，电脑开机后不会自动出现虚拟副屏。
+- 启用/禁用 VDD 设备需要管理员权限：exe 清单为 `requireAdministrator`，每次启动会有 UAC 提示。
+- `--resolution WxH`：跳过选择框，直接用指定模式（自动化/测试用）。
+- `--no-vdd`：不管理虚拟副屏，按 `capture.monitor_match` 使用已有显示器（无板自测/物理屏演练）。
 - `--dump-frame`：每次全刷结束时把当前帧写成 BMP（A2 比对用，文件被覆盖）。
 - Ctrl-C 正常退出（退出码 0）。
 
@@ -32,8 +39,10 @@ cd windows\build\x64\Release
 | display.fps_cap | 20 | 帧率上限（SET_QUALITY 与背压只降不升） |
 | display.full_refresh_sec | 5 | 周期自愈全刷间隔（有脏块时才发） |
 | display.format | bgra32 | 初始建议格式，板端可经 HELLO_ACK/SET_QUALITY 决定 |
+| display.manage_vdd | 1 | 1=启动时启用 VDD、退出时禁用；0=使用已有显示器（等同 `--no-vdd`） |
+| display.virtual_resolution | 1024x600 | 分辨率选择框的默认项（选择后会写回） |
 | capture.mode | gdi | gdi / dxgi；dxgi 优先 Desktop Duplication，失败自动回退 GDI |
-| capture.monitor_match | 1024x600 | `WxH` / `index:N` / `name:\\.\DISPLAYn` |
+| capture.monitor_match | 1024x600 | `WxH` / `index:N` / `name:\\.\DISPLAYn`；管理 VDD 时运行时改为按设备名定位 |
 | tile.size / lz4 | 64 / 1 | 分块大小固定 64；LZ4 开关 |
 | cursor.composite | 1 | 合成硬件光标（光标不在采集画面内） |
 
@@ -44,8 +53,8 @@ cd windows\build\x64\Release
 python tools\mock_receiver.py --port 5901 --lz4-check
 
 # 终端 2：把 config.ini 的 server.ip 改为 127.0.0.1；
-#         无 VDD 时可用 index:0 / 实际分辨率临时指向物理屏做协议演练
-.\super_screen_win.exe
+#         无 VDD 时加 --no-vdd，用 index:0 / 实际分辨率指向物理屏做协议演练
+.\super_screen_win.exe --no-vdd
 ```
 
 验收测试表（C1–C6）见 `docs/plan-windows.md` §7。
@@ -61,21 +70,18 @@ M3：`capture.mode = dxgi` 已实现并在 VDD 上实测可用（Desktop Duplica
 VDD 安装、`vdd/vdd_settings.xml` 与验证记录（A1）在 M0 阶段补充；安装步骤见
 `docs/plan-windows.md` §3。CI/本地编译不依赖 VDD。
 
-## 自启（M2）
+驱动安装后设备保持存在；应用启动时启用、正常退出时禁用。正常退出后设备保持**禁用**状态，
+因此未运行应用时开机不会自动多出一块虚拟副屏。若第一次从旧版本升级，设备可能仍处于启用
+状态，运行一次应用并正常退出即可。
 
-不做 Windows 服务（服务运行在会话 0，取不到交互桌面与显示器拓扑）。用任务计划程序，
-触发器 = 用户登录，延迟 30s，工作目录 = exe 所在目录（`config.ini` 与 exe 必须同目录）：
+## 启动方式（不再开机自启）
+
+按需求改为**点击应用后再创建虚拟副屏**，不再安装登录自启任务。若旧机器上注册过旧版任务，
+先删除：
 
 ```powershell
-# 管理员 PowerShell；默认使用 build\x64\Release\super_screen_win.exe
-powershell -ExecutionPolicy Bypass -File windows\scripts\install_autostart.ps1
-
-# 指定部署路径
-powershell -ExecutionPolicy Bypass -File windows\scripts\install_autostart.ps1 `
-    -ExePath D:\apps\super_screen\super_screen_win.exe
-
-# 卸载
-powershell -ExecutionPolicy Bypass -File windows\scripts\install_autostart.ps1 -Uninstall
+Unregister-ScheduledTask -TaskName super_screen_win -Confirm:$false
 ```
 
-任务以当前用户的交互令牌运行（RunLevel Limited），注册任务需要管理员权限，应用本身不需要。
+然后直接双击 `super_screen_win.exe`（或创建桌面快捷方式），在分辨率选择框里确认后使用。
+`--no-vdd` 模式不会创建/删除虚拟副屏。

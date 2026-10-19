@@ -61,7 +61,7 @@ apt install osslsigncode 2>/dev/null && osslsigncode verify -in <driver>.cat   #
 
 1. 运行 VDD Control App（或以 winget 安装），Install Driver；
 2. 将 `vdd_settings.xml` 拷到 `C:\VirtualDisplayDriver\`，在 App 里 RELOAD_DRIVER；
-3. `DisplaySwitch.exe /extend` 切扩展模式；在显示设置中把副屏设为 1024x600@60、缩放 100%、置于合适位置（建议主屏右侧）。
+3. （可选）安装后手动 `DisplaySwitch.exe /extend` 验证副屏；日常由应用在启动时启用 VDD、切扩展并设置用户选择的分辨率，退出时禁用。
 
 ### 3.3 验证（命令行友好）
 
@@ -162,6 +162,8 @@ port = 5901
 fps_cap = 20
 full_refresh_sec = 5
 format = bgra32          ; bgra32 | rgb565
+manage_vdd = 1           ; 1=按需启用/禁用 VDD；0=使用已有显示器
+virtual_resolution = 1024x600 ; 启动选择框的默认分辨率
 
 [capture]
 mode = gdi               ; gdi | dxgi
@@ -176,8 +178,10 @@ composite = 1
 ```
 
 - `monitor_match` 的 `name:` 后接 Win32 设备名原文（如 `\\.\DISPLAY2`）；INI 值不做转义处理，`GetPrivateProfileString` 原样读取，按原文写入即可（不要增删反斜杠）。
-- 虚拟屏分辨率在 Windows“显示设置”中选择（模式来自 VDD 的 `vdd_settings.xml`，可自行添加常用分辨率，
-  如 1280x720/1920x1080）；`config.ini` 不限制虚拟分辨率，`monitor_match` 只负责定位。
+- `manage_vdd=1`（默认）时，启动先显示分辨率选择框（模式来自 VDD 的 `vdd_settings.xml`，可自行添加
+  常用分辨率），确认后应用启用 VDD 设备、扩展桌面并设置模式，退出时禁用；运行时把
+  `monitor_match` 覆盖为 `name:<设备名>`，因此无需手工维护。`manage_vdd=0` 或 `--no-vdd` 时
+  回到旧行为，按 `monitor_match` 定位已有显示器。
 - 板端目标分辨率由板端 `--resolution WxH`（或 S99 的 `RESOLUTION`）决定，必须 ≤ 物理屏；Windows 端通过
   `HELLO_ACK` 获取后把画面缩放到该尺寸发送，`config.ini` 无需配置板端分辨率。
 
@@ -189,7 +193,10 @@ composite = 1
 - `config.ini` 用 `GetPrivateProfileString` 读取；文件缺失时使用内置默认值并在日志中提示。
 - 代码可在 Ubuntu 编写，编译以 MSVC 为准；mingw-w64 仅能覆盖 GDI 路径，不作主路径。
 - 产出：`super_screen_win.exe`（单文件 + config.ini + 源码编译说明已写入 `README.md`）。
-- **M2 自启（A5）**：不做 Windows 服务（服务运行在会话 0，取不到交互桌面与显示器拓扑）；用**任务计划程序**注册"用户登录时启动"，触发后延迟 30s 等 VDD 与桌面就绪，工作目录设为 exe 所在目录；安装步骤记入 `windows/README.md`。
+- **启动方式（A5 调整）**：按用户要求改为**点击应用后按需创建虚拟副屏**，不再注册登录自启任务。
+  VDD 设备保持安装但默认禁用；应用启动时先弹分辨率选择框，确认后启用设备并设置显示模式，退出时禁用。
+  启停设备需要管理员权限，exe 链接清单为 `requireAdministrator`。安装步骤与旧任务清理记入
+  `windows/README.md`。
 
 ## 7. 测试与验收
 
@@ -232,6 +239,6 @@ composite = 1
 | IDD 屏不被 DXGI Duplication 支持 | GDI 为基准路径；DXGI 运行时探测，失败自动回退 |
 | GDI 采集耗时高 | 统计实测；超预算再上 DXGI（M3）；必要时降 fps |
 | 光标未合成/残影 | C2 场景专项检查；残影通过"旧位置标脏"保证 |
-| 副屏非扩展模式/分辨率不符 | monitor 模块明确报错并周期重试，不做隐式系统设置修改 |
+| 副屏非扩展模式/分辨率不符 | 按需模式在启动时显式扩展并设置所选模式；`--no-vdd` 模式保持只报错、周期重试 |
 | Windows 更新后副屏消失 | 记录 VDD 版本；按 §3 流程重装并回归 C4 |
 | 双系统差异（Win10 旧版 API） | 仅用 Win10 1903+ 均有的 API（GDI/DXGI/DisplaySwitch）；C4 双验 |
