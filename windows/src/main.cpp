@@ -18,6 +18,7 @@
 #include "capture_gdi.h"
 #include "config.h"
 #include "cursor.h"
+#include "display_setup.h"
 #include "log.h"
 #include "lz4wrap.h"
 #include "monitor.h"
@@ -37,6 +38,7 @@ BOOL WINAPI ConsoleCtrlHandler(DWORD type)
         case CTRL_C_EVENT:
         case CTRL_BREAK_EVENT:
         case CTRL_CLOSE_EVENT:
+        case CTRL_LOGOFF_EVENT:
         case CTRL_SHUTDOWN_EVENT:
             InterlockedExchange(&g_stop, 1);
             return TRUE;
@@ -264,7 +266,9 @@ private:
     std::vector<uint8_t> m_payload;
 };
 
-const char* kUsage = "usage: super_screen_win [--config FILE] [--dump-frame FILE]\n";
+const char* kUsage =
+    "usage: super_screen_win [--config FILE] [--dump-frame FILE] [--resolution WxH] "
+    "[--no-vdd]\n";
 
 std::wstring Utf8ToWide(const char* text)
 {
@@ -274,6 +278,22 @@ std::wstring Utf8ToWide(const char* text)
     }
     std::wstring out(static_cast<size_t>(need), L'\0');
     MultiByteToWideChar(CP_UTF8, 0, text, -1, out.data(), need);
+    out.resize(static_cast<size_t>(need - 1));
+    return out;
+}
+
+std::string WideToUtf8(const std::wstring& text)
+{
+    if (text.empty()) {
+        return std::string();
+    }
+    const int need =
+        WideCharToMultiByte(CP_UTF8, 0, text.c_str(), -1, nullptr, 0, nullptr, nullptr);
+    if (need <= 0) {
+        return std::string();
+    }
+    std::string out(static_cast<size_t>(need), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, text.c_str(), -1, out.data(), need, nullptr, nullptr);
     out.resize(static_cast<size_t>(need - 1));
     return out;
 }
@@ -672,19 +692,53 @@ int Run(const Config& cfg, const char* dumpPath)
     return 0;
 }
 
+struct SingleInstanceGuard {
+    HANDLE mutex = nullptr;
+    bool alreadyRunning = false;
+
+    SingleInstanceGuard()
+    {
+        SetLastError(ERROR_SUCCESS);
+        mutex = CreateMutexW(nullptr, TRUE, L"Local\\super_screen_win_instance");
+        if (mutex != nullptr && GetLastError() == ERROR_ALREADY_EXISTS) {
+            alreadyRunning = true;
+        }
+    }
+    ~SingleInstanceGuard()
+    {
+        if (mutex != nullptr) {
+            CloseHandle(mutex);
+        }
+    }
+    SingleInstanceGuard(const SingleInstanceGuard&) = delete;
+    SingleInstanceGuard& operator=(const SingleInstanceGuard&) = delete;
+};
+
+struct TimerPeriodGuard {
+    TimerPeriodGuard() { timeBeginPeriod(1); }
+    ~TimerPeriodGuard() { timeEndPeriod(1); }
+    TimerPeriodGuard(const TimerPeriodGuard&) = delete;
+    TimerPeriodGuard& operator=(const TimerPeriodGuard&) = delete;
+};
+
 }  // namespace
 
 int main(int argc, char** argv)
 {
     LogInit();
-    timeBeginPeriod(1);  // Sleep(1) 默认量化 ~15.6ms，会让 20fps 上限掉到 ~16fps
     const char* dumpPath = nullptr;
     const char* configPath = nullptr;
+    const char* resolutionArg = nullptr;
+    bool noVdd = false;
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--dump-frame") == 0 && i + 1 < argc) {
             dumpPath = argv[++i];
         } else if (std::strcmp(argv[i], "--config") == 0 && i + 1 < argc) {
             configPath = argv[++i];
+        } else if (std::strcmp(argv[i], "--resolution") == 0 && i + 1 < argc) {
+            resolutionArg = argv[++i];
+        } else if (std::strcmp(argv[i], "--no-vdd") == 0) {
+            noVdd = true;
         } else if (std::strcmp(argv[i], "--help") == 0 || std::strcmp(argv[i], "-h") == 0) {
             std::printf("%s", kUsage);
             return 0;
@@ -699,6 +753,16 @@ int main(int argc, char** argv)
         SetProcessDPIAware();
     }
     SetConsoleCtrlHandler(ConsoleCtrlHandler, TRUE);
+    // Sleep(1) 默认量化 ~15.6ms，会让 20fps 上限掉到 ~16fps
+    TimerPeriodGuard timerPeriod;
+
+    SingleInstanceGuard instance;
+    if (instance.alreadyRunning) {
+        LogWarn("another super_screen_win instance is already running");
+        MessageBoxW(nullptr, L"super_screen_win 已在运行。", L"super_screen_win",
+                    MB_ICONINFORMATION | MB_OK);
+        return 1;
+    }
 
     const std::wstring iniPath =
         configPath != nullptr ? Utf8ToWide(configPath) : DefaultIniPath();
@@ -706,9 +770,75 @@ int main(int argc, char** argv)
     if (!LoadConfig(iniPath.c_str(), &cfg)) {
         return 2;
     }
+    if (noVdd) {
+        cfg.manageVdd = false;
+        LogInfo("--no-vdd: virtual display management disabled");
+    }
+
+    VirtualDisplay display;
+    if (cfg.manageVdd) {
+        if (!IsProcessElevated()) {
+            LogError("administrator privileges are required to manage the virtual display");
+            MessageBoxW(nullptr, L"创建/移除虚拟副屏需要管理员权限。", L"super_screen_win",
+                        MB_ICONERROR | MB_OK);
+            return 2;
+        }
+        if (!IsVddInstalled()) {
+            LogError("VDD device not found (Root\\MttVDD)");
+            MessageBoxW(nullptr,
+                        L"未找到 VDD 虚拟显示驱动 (Root\\MttVDD)。\n"
+                        L"请先按 windows/vdd/install_notes.md 安装驱动；\n"
+                        L"若只想使用已有显示器，可在 config.ini 设置 manage_vdd=0。",
+                        L"super_screen_win", MB_ICONERROR | MB_OK);
+            return 2;
+        }
+
+        ResolutionMode mode{};
+        if (resolutionArg != nullptr) {
+            if (!ParseResolution(resolutionArg, &mode)) {
+                LogError("invalid --resolution '%s' (expected WxH)", resolutionArg);
+                std::printf("%s", kUsage);
+                return 1;
+            }
+        } else {
+            const std::vector<ResolutionMode> modes = LoadResolutionModes();
+            if (modes.empty()) {
+                LogError("no virtual display resolution modes available");
+                MessageBoxW(nullptr, L"没有可用的分辨率模式，请检查 vdd_settings.xml。",
+                            L"super_screen_win", MB_ICONERROR | MB_OK);
+                return 2;
+            }
+
+            ResolutionMode saved{};
+            int defaultIndex = 0;
+            if (ParseResolution(cfg.virtualResolution, &saved)) {
+                defaultIndex = FindResolutionIndex(modes, saved.width, saved.height);
+            }
+            int selected = defaultIndex;
+            if (!ShowResolutionDialog(nullptr, modes, defaultIndex, &selected)) {
+                LogInfo("resolution selection cancelled");
+                return 0;
+            }
+            mode = modes[static_cast<size_t>(selected)];
+            SaveVirtualResolution(iniPath.c_str(), mode.width, mode.height);
+        }
+
+        std::wstring deviceName;
+        std::wstring error;
+        if (!display.Start(mode, &deviceName, &error)) {
+            LogError("virtual display start failed: %ls", error.c_str());
+            const std::wstring message = L"创建虚拟副屏失败：\n" + error;
+            MessageBoxW(nullptr, message.c_str(), L"super_screen_win", MB_ICONERROR | MB_OK);
+            return 2;
+        }
+        cfg.monitorMatch = "name:" + WideToUtf8(deviceName);
+        LogInfo("manage VDD on demand: %dx%d on %ls", mode.width, mode.height,
+                deviceName.c_str());
+    }
+
     LogInfo("super_screen_win starting");
     const int rc = Run(cfg, dumpPath);
-    timeEndPeriod(1);
+    display.Stop();
     LogInfo("exit code %d", rc);
     return rc;
 }

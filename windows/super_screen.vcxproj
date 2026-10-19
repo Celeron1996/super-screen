@@ -55,7 +55,9 @@
     <Link>
       <SubSystem>Console</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <AdditionalDependencies>ws2_32.lib;gdi32.lib;user32.lib;psapi.lib;winmm.lib;d3d11.lib;dxgi.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <EnableUAC>true</EnableUAC>
+      <UACExecutionLevel>RequireAdministrator</UACExecutionLevel>
+      <AdditionalDependencies>ws2_32.lib;gdi32.lib;user32.lib;psapi.lib;winmm.lib;d3d11.lib;dxgi.lib;setupapi.lib;cfgmgr32.lib;shell32.lib;uuid.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
@@ -80,13 +82,16 @@
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
-      <AdditionalDependencies>ws2_32.lib;gdi32.lib;user32.lib;psapi.lib;winmm.lib;d3d11.lib;dxgi.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <EnableUAC>true</EnableUAC>
+      <UACExecutionLevel>RequireAdministrator</UACExecutionLevel>
+      <AdditionalDependencies>ws2_32.lib;gdi32.lib;user32.lib;psapi.lib;winmm.lib;d3d11.lib;dxgi.lib;setupapi.lib;cfgmgr32.lib;shell32.lib;uuid.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="src\main.cpp" />
     <ClCompile Include="src\log.cpp" />
     <ClCompile Include="src\config.cpp" />
+    <ClCompile Include="src\display_setup.cpp" />
     <ClCompile Include="src\monitor.cpp" />
     <ClCompile Include="src\capture_gdi.cpp" />
     <ClCompile Include="src\capture_dxgi.cpp" />
@@ -104,6 +109,8 @@
     <ClInclude Include="src\protocol_util.h" />
     <ClInclude Include="src\log.h" />
     <ClInclude Include="src\config.h" />
+    <ClInclude Include="src\display_setup.h" />
+    <ClInclude Include="src\resource.h" />
     <ClInclude Include="src\monitor.h" />
     <ClInclude Include="src\capture_gdi.h" />
     <ClInclude Include="src\capture_dxgi.h" />
@@ -113,6 +120,9 @@
     <ClInclude Include="src\lz4wrap.h" />
     <ClInclude Include="src\net.h" />
     <ClInclude Include="src\lz4\lz4.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <ResourceCompile Include="src\app.rc" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>

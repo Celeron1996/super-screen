@@ -12,6 +12,8 @@ struct Config {
     int fpsCap = 20;
     int fullRefreshSec = 5;
     int format = 0;
+    bool manageVdd = true;
+    std::string virtualResolution = "1024x600";
     std::string captureMode = "gdi";
     std::string monitorMatch = "1024x600";
     int tileSize = 64;
@@ -20,3 +22,4 @@ struct Config {
 };
 
 bool LoadConfig(const wchar_t* iniPath, Config* cfg);
+void SaveVirtualResolution(const wchar_t* iniPath, int width, int height);
