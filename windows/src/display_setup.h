@@ -15,12 +15,22 @@ struct ResolutionMode {
     int refresh = 60;
 };
 
+enum class ResolutionDialogResult {
+    Cancelled,
+    Start,
+    RemoveDisplay,
+};
+
 bool IsProcessElevated();
 bool IsVddInstalled();
+bool IsVddEnabled();
+bool RemoveVirtualDisplay(std::wstring* error);
 
 std::vector<ResolutionMode> LoadResolutionModes();
-bool ShowResolutionDialog(HWND owner, const std::vector<ResolutionMode>& modes, int defaultIndex,
-                          int* selectedIndex);
+ResolutionDialogResult ShowResolutionDialog(HWND owner,
+                                            const std::vector<ResolutionMode>& modes,
+                                            int defaultIndex, bool displayRegistered,
+                                            int* selectedIndex);
 
 bool ParseResolution(const std::string& text, ResolutionMode* mode);
 int FindResolutionIndex(const std::vector<ResolutionMode>& modes, int width, int height);

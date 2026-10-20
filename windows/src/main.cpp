@@ -268,7 +268,7 @@ private:
 
 const char* kUsage =
     "usage: super_screen_win [--config FILE] [--dump-frame FILE] [--resolution WxH] "
-    "[--no-vdd]\n";
+    "[--no-vdd] [--remove-vdd]\n";
 
 std::wstring Utf8ToWide(const char* text)
 {
@@ -730,6 +730,7 @@ int main(int argc, char** argv)
     const char* configPath = nullptr;
     const char* resolutionArg = nullptr;
     bool noVdd = false;
+    bool removeVdd = false;
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--dump-frame") == 0 && i + 1 < argc) {
             dumpPath = argv[++i];
@@ -739,6 +740,8 @@ int main(int argc, char** argv)
             resolutionArg = argv[++i];
         } else if (std::strcmp(argv[i], "--no-vdd") == 0) {
             noVdd = true;
+        } else if (std::strcmp(argv[i], "--remove-vdd") == 0) {
+            removeVdd = true;
         } else if (std::strcmp(argv[i], "--help") == 0 || std::strcmp(argv[i], "-h") == 0) {
             std::printf("%s", kUsage);
             return 0;
@@ -759,9 +762,30 @@ int main(int argc, char** argv)
     SingleInstanceGuard instance;
     if (instance.alreadyRunning) {
         LogWarn("another super_screen_win instance is already running");
-        MessageBoxW(nullptr, L"super_screen_win 已在运行。", L"super_screen_win",
-                    MB_ICONINFORMATION | MB_OK);
+        MessageBoxW(nullptr, L"super_screen_win 已在运行；请先退出正在运行的实例。",
+                    L"super_screen_win", MB_ICONINFORMATION | MB_OK);
         return 1;
+    }
+
+    if (removeVdd) {
+        if (!IsVddInstalled()) {
+            LogError("VDD device not found (Root\\MttVDD)");
+            MessageBoxW(nullptr, L"未找到 VDD 虚拟显示驱动 (Root\\MttVDD)。",
+                        L"super_screen_win", MB_ICONERROR | MB_OK);
+            return 2;
+        }
+        const bool wasEnabled = IsVddEnabled();
+        std::wstring error;
+        if (!RemoveVirtualDisplay(&error)) {
+            LogError("remove virtual display failed: %ls", error.c_str());
+            const std::wstring message = L"移除虚拟副屏失败：\n" + error;
+            MessageBoxW(nullptr, message.c_str(), L"super_screen_win", MB_ICONERROR | MB_OK);
+            return 2;
+        }
+        MessageBoxW(nullptr,
+                    wasEnabled ? L"虚拟副屏已移除。" : L"当前没有已注册的虚拟副屏。",
+                    L"super_screen_win", MB_ICONINFORMATION | MB_OK);
+        return 0;
     }
 
     const std::wstring iniPath =
@@ -814,8 +838,27 @@ int main(int argc, char** argv)
             if (ParseResolution(cfg.virtualResolution, &saved)) {
                 defaultIndex = FindResolutionIndex(modes, saved.width, saved.height);
             }
+            const bool displayRegistered = IsVddEnabled();
             int selected = defaultIndex;
-            if (!ShowResolutionDialog(nullptr, modes, defaultIndex, &selected)) {
+            const ResolutionDialogResult dialogResult = ShowResolutionDialog(
+                nullptr, modes, defaultIndex, displayRegistered, &selected);
+            if (dialogResult == ResolutionDialogResult::RemoveDisplay) {
+                std::wstring removeError;
+                if (!RemoveVirtualDisplay(&removeError)) {
+                    LogError("remove virtual display failed: %ls", removeError.c_str());
+                    const std::wstring message = L"移除虚拟副屏失败：\n" + removeError;
+                    MessageBoxW(nullptr, message.c_str(), L"super_screen_win",
+                                MB_ICONERROR | MB_OK);
+                    return 2;
+                }
+                MessageBoxW(nullptr,
+                            displayRegistered ? L"虚拟副屏已移除。"
+                                              : L"当前没有已注册的虚拟副屏。",
+                            L"super_screen_win", MB_ICONINFORMATION | MB_OK);
+                LogInfo("virtual display removed manually");
+                return 0;
+            }
+            if (dialogResult != ResolutionDialogResult::Start) {
                 LogInfo("resolution selection cancelled");
                 return 0;
             }

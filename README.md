@@ -135,7 +135,8 @@ win INFO session ready: target 1024x600, virtual 1024x600, scale=0
 - 把任意窗口拖到 Windows 的**所选分辨率的虚拟副屏**（主屏右侧，不是板子 LCD 表面）；
   板端 LCD 应实时镜像。虚拟副屏位置变化后约 3s 内应用会自动跟踪。
 - 停止发送端：在控制台按 `Ctrl-C`（正常退出并移除虚拟副屏）；不要用 `Stop-Process` 强杀，
-  否则退出清理不会执行，副屏可能保留到下次开机。
+  否则退出清理不会执行，副屏可能保留到下次开机。若已残留，双击应用点“移除副屏”，或运行
+  `super_screen_win.exe --remove-vdd`。
 - 停止板端：`ssh root@<板子IP> '/etc/init.d/S99superscreen stop'`
 - 无板自测：Ubuntu/本机运行 `python tools/mock_receiver.py --port 5901 --lz4-check`，
   再把 Windows `config.ini` 的 `server.ip` 改为该机器 IP（本机即 `127.0.0.1`）后运行发送端。
@@ -382,7 +383,7 @@ convert -size 1024x600 -depth 8 bgra:fb.raw fb.png
 | `cursor.composite` | 1 | 合成 VDD 硬件光标 |
 
 命令行：`--config FILE`、`--dump-frame FILE`、`--resolution WxH`（跳过选择框）、
-`--no-vdd`（不管理虚拟屏）、`--help`。
+`--no-vdd`（不管理虚拟屏）、`--remove-vdd`（只移除已注册的虚拟副屏并退出）、`--help`。
 
 - 在默认的 `manage_vdd=1` 模式下，启动应用时先选择分辨率，应用再启用 VDD 并按设备名定位；
   `monitor_match` 无需手工维护。板端目标分辨率仍由板端 `--resolution`/S99 决定，Windows 端通过
@@ -454,7 +455,7 @@ python tools\mock_receiver.py --port 5901 --lz4-check
 | 板端画面有黑边/尺寸不对 | 板端目标分辨率与预期不符 | 查看应用 `session ready: target WxH` 与板端 `HELLO ... target WxH` 日志；核对板端 `RESOLUTION` |
 | 提示找不到显示器 | 虚拟屏未创建 / 匹配串错误 | 使用默认 `manage_vdd=1` 让应用创建；或应用运行后 `DisplaySwitch /extend`；改 `monitor_match`；看日志中的显示器清单 |
 | 开机后仍自动出现虚拟副屏 | 旧版本未正常退出，或仍注册了旧自启任务 | 运行一次新版应用并正常退出；删除旧任务：`Unregister-ScheduledTask -TaskName super_screen_win -Confirm:$false` |
-| 强制结束应用后副屏仍在 | 进程被强杀，未执行退出清理 | 重新运行应用并正常退出（Ctrl-C），或管理员执行 `pnputil /disable-device "ROOT\DISPLAY\0001"` |
+| 强制结束/关机后副屏仍在 | 进程未执行退出清理，VDD 保持启用 | 双击应用，在分辨率选择框点**“移除副屏”**；或运行 `super_screen_win.exe --remove-vdd`；也可管理员执行 `pnputil /disable-device "ROOT\DISPLAY\0001"` |
 | 卡顿/延迟高 | WiFi 拥塞、屏幕大面积变化 | 关闭占带宽应用；降低 `fps_cap`；板端会自动降为 RGB565 |
 | 板端变黑/花屏 | fbcon、psplash 或其他服务占屏 | 确认 S99 已解绑 fbcon/停 psplash；停无关应用 |
 | VDD 安装后黑屏（主机） | VDD 已知问题 | 安全模式卸载 VDD（见 `windows/vdd/install_notes.md`） |

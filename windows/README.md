@@ -18,16 +18,19 @@ msbuild windows\super_screen.sln /p:Configuration=Release /p:Platform=x64
 
 ```powershell
 cd windows\build\x64\Release
-.\super_screen_win.exe [--config FILE] [--dump-frame frame.bmp] [--resolution WxH] [--no-vdd]
+.\super_screen_win.exe [--config FILE] [--dump-frame frame.bmp] [--resolution WxH] [--no-vdd] [--remove-vdd]
 ```
 
 - 直接双击或运行 exe 时，会先弹出**分辨率选择框**，确认后才启用虚拟副屏；可用模式来自
-  `C:\VirtualDisplayDriver\vdd_settings.xml`。
+  `C:\VirtualDisplayDriver\vdd_settings.xml`。若当前已有残留的虚拟副屏，选择框中的
+  **“移除副屏”**按钮可直接禁用 VDD 并退出。
 - 虚拟副屏**只在应用运行期间存在**：启动时启用 VDD 设备，退出（包括 Ctrl-C）时禁用。
   因此应用没有运行时，电脑开机后不会自动出现虚拟副屏。
 - 启用/禁用 VDD 设备需要管理员权限：exe 清单为 `requireAdministrator`，每次启动会有 UAC 提示。
 - `--resolution WxH`：跳过选择框，直接用指定模式（自动化/测试用）。
 - `--no-vdd`：不管理虚拟副屏，按 `capture.monitor_match` 使用已有显示器（无板自测/物理屏演练）。
+- `--remove-vdd`：只移除已注册的虚拟副屏（禁用 VDD 设备）并退出，不启动发送端。
+  适用于应用被强杀/关机时未清理、开机后又出现副屏的情况。
 - `--dump-frame`：每次全刷结束时把当前帧写成 BMP（A2 比对用，文件被覆盖）。
 - Ctrl-C 正常退出（退出码 0）。
 

@@ -47,7 +47,9 @@
 
 - 驱动保持安装，但应用未运行时 VDD 设备默认禁用，因此开机后不会自动出现虚拟副屏。
 - `super_screen_win.exe` 启动时先让用户选择分辨率，再启用 VDD、设置模式；退出时禁用。
-- 手动检查/清理（管理员）：
+- 手动移除残留副屏：双击 `super_screen_win.exe`，在分辨率选择框点“移除副屏”；或运行
+  `super_screen_win.exe --remove-vdd`。
+- 命令行检查/清理（管理员）：
 
   ```powershell
   pnputil /disable-device "ROOT\DISPLAY\0001"

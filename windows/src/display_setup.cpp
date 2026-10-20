@@ -33,6 +33,7 @@ struct ResolutionDialogContext {
     const std::vector<ResolutionMode>* modes = nullptr;
     int defaultIndex = 0;
     int selectedIndex = -1;
+    bool displayRegistered = false;
 };
 
 bool HasVddHardwareId(HDEVINFO set, SP_DEVINFO_DATA* info)
@@ -388,6 +389,8 @@ INT_PTR CALLBACK ResolutionDialogProc(HWND dialog, UINT message, WPARAM wParam, 
             index = 0;
         }
         SendMessageW(combo, CB_SETCURSEL, static_cast<WPARAM>(index), 0);
+        EnableWindow(GetDlgItem(dialog, IDC_REMOVE_DISPLAY),
+                     context->displayRegistered ? TRUE : FALSE);
         return TRUE;
     }
 
@@ -407,6 +410,9 @@ INT_PTR CALLBACK ResolutionDialogProc(HWND dialog, UINT message, WPARAM wParam, 
             }
             case IDCANCEL:
                 EndDialog(dialog, IDCANCEL);
+                return TRUE;
+            case IDC_REMOVE_DISPLAY:
+                EndDialog(dialog, IDC_REMOVE_DISPLAY);
                 return TRUE;
             default:
                 break;
@@ -450,6 +456,37 @@ bool IsVddInstalled()
     return found;
 }
 
+bool IsVddEnabled()
+{
+    HDEVINFO set =
+        SetupDiGetClassDevsW(&GUID_DEVCLASS_DISPLAY, nullptr, nullptr, DIGCF_PRESENT);
+    if (set == INVALID_HANDLE_VALUE) {
+        return false;
+    }
+
+    SP_DEVINFO_DATA info{};
+    info.cbSize = sizeof(info);
+    bool enabled = false;
+    if (FindVddDevice(set, &info)) {
+        ULONG status = 0;
+        ULONG problem = 0;
+        if (CM_Get_DevNode_Status(&status, &problem, info.DevInst, 0) == CR_SUCCESS) {
+            enabled = (status & DN_STARTED) != 0 && problem == 0;
+        }
+    }
+    SetupDiDestroyDeviceInfoList(set);
+    return enabled;
+}
+
+bool RemoveVirtualDisplay(std::wstring* error)
+{
+    if (!IsProcessElevated()) {
+        *error = L"administrator privileges are required";
+        return false;
+    }
+    return SetVddEnabled(false, error);
+}
+
 std::vector<ResolutionMode> LoadResolutionModes()
 {
     std::vector<ResolutionMode> modes = ParseSettingsFile();
@@ -472,16 +509,19 @@ std::vector<ResolutionMode> LoadResolutionModes()
     return unique;
 }
 
-bool ShowResolutionDialog(HWND owner, const std::vector<ResolutionMode>& modes, int defaultIndex,
-                          int* selectedIndex)
+ResolutionDialogResult ShowResolutionDialog(HWND owner,
+                                            const std::vector<ResolutionMode>& modes,
+                                            int defaultIndex, bool displayRegistered,
+                                            int* selectedIndex)
 {
     if (modes.empty() || selectedIndex == nullptr) {
-        return false;
+        return ResolutionDialogResult::Cancelled;
     }
 
     ResolutionDialogContext context;
     context.modes = &modes;
     context.defaultIndex = defaultIndex;
+    context.displayRegistered = displayRegistered;
 
     const INT_PTR result = DialogBoxParamW(GetModuleHandleW(nullptr),
                                            MAKEINTRESOURCEW(IDD_RESOLUTION), owner,
@@ -489,13 +529,16 @@ bool ShowResolutionDialog(HWND owner, const std::vector<ResolutionMode>& modes, 
                                            reinterpret_cast<LPARAM>(&context));
     if (result == -1) {
         LogError("DialogBoxParam failed: %lu", GetLastError());
-        return false;
+        return ResolutionDialogResult::Cancelled;
+    }
+    if (result == IDC_REMOVE_DISPLAY) {
+        return ResolutionDialogResult::RemoveDisplay;
     }
     if (result != IDOK || context.selectedIndex < 0) {
-        return false;
+        return ResolutionDialogResult::Cancelled;
     }
     *selectedIndex = context.selectedIndex;
-    return true;
+    return ResolutionDialogResult::Start;
 }
 
 bool ParseResolution(const std::string& text, ResolutionMode* mode)
